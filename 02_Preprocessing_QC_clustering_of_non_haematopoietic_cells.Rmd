@@ -1,0 +1,87 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-11-18"
+---
+
+```{r setup, include=FALSE}
+# Read in Seurat object of all cells
+# Subset out non-haematopoietic clusters
+# Normalise, scale data, QC, assign clusters, find markers and save object.
+
+#Load libraries
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(cowplot)
+library(ggplot2)
+library(plyr)
+
+#load Seurat object of all cells
+load("Seurat_object/samples_merged.Robj")
+
+#Subset out non-haematopoietic clusters - "27" = Chondrocytes, "28" = Osteoblast lineage cells, "31" = Endothelial cells, "32" = VSMCs (identified from manual annotation using canonical markers and markers identified from FindAllMarkers function)
+non_haematopoietic <- subset(samples_merged, ident.use = c("27", "28", "31", "32"))
+
+#Normalise data
+non_haematopoietic <- NormalizeData(non_haematopoietic, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find variable features
+non_haematopoietic <- FindVariableGenes(object = non_haematopoietic, mean.function = ExpMean, dispersion.function = LogVMR,
+                           x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+#Scale data
+all.genes <- rownames(non_haematopoietic)
+non_haematopoietic <- ScaleData(non_haematopoietic, features = all.genes)
+
+#Linear dimensional reduction
+non_haematopoietic <- RunPCA(non_haematopoietic, features = VariableFeatures(object = non_haematopoietic))
+
+#Clustering and UMAP
+non_haematopoietic <- FindClusters(object = non_haematopoietic, reduction.type = "pca", dims.use = 1:20,
+                                          resolution = 1.2, print.output = 0, save.SNN = TRUE)
+
+non_haematopoietic <- RunUMAP(non_haematopoietic, dims = 1:20)
+
+pdf("plots/umap_non_haematopietic_resolution_1.2.pdf", width = 10, height = 10)
+DimPlot(non_haematopoietic, group.by = "RNA_snn_res.1.2", pt.size = 0.01, label = T, raster = F)
+dev.off()
+
+#Findallmarkers
+non_haematopoietic_markers <- FindAllMarkers(object = non_haematopoietic, logfc.threshold = 0.5, only.pos = TRUE, min.pct = 0.25)
+
+#Subset out unwanted cells (neuronal cells and doublets based on manual annotation and markers identified from the FindAllMarkers function above) and recluster. 
+
+non_haematopoietic_clean <- subset(non_haematopoietic, ident.use = c("3", "12", "5", "1", "9", "15", "14", "4", "0", "2", "11", "10", "13"))
+
+#Normalise data
+non_haematopoietic_clean <- NormalizeData(non_haematopoietic_clean, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find variable features
+non_haematopoietic_clean <- FindVariableGenes(object = non_haematopoietic_clean, mean.function = ExpMean, dispersion.function = LogVMR,
+                           x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+#Scale data
+all.genes <- rownames(non_haematopoietic_clean)
+non_haematopoietic_clean <- ScaleData(non_haematopoietic_clean, features = all.genes)
+
+#Linear dimensional reduction
+non_haematopoietic_clean <- RunPCA(non_haematopoietic_clean, features = VariableFeatures(object = non_haematopoietic_clean))
+
+#Clustering and UMAP
+non_haematopoietic_clean <- FindClusters(object = non_haematopoietic_clean, reduction.type = "pca", dims.use = 1:20,
+                                          resolution = 1.2, print.output = 0, save.SNN = TRUE)
+
+non_haematopoietic_clean <- RunUMAP(non_haematopoietic_clean, dims = 1:20)
+
+pdf("plots/umap_non_haematopietic_resolution_1.2.pdf", width = 10, height = 10)
+DimPlot(non_haematopoietic_clean, group.by = "RNA_snn_res.1.2", pt.size = 0.01, label = T, raster = F)
+dev.off()
+
+#Findallmarkers
+non_haematopoietic_clean_markers <- FindAllMarkers(object = non_haematopoietic_clean, logfc.threshold = 0.5, only.pos = TRUE, min.pct = 0.25)
+
+#save object
+save(non_haematopoietic_clean, file = "Seurat_object/non_haematopoietic_clean.Robj")
+
+
+```
+

@@ -1,0 +1,248 @@
+---
+title: "Analyse snATAC-Seq data"
+output: html_document
+date: "2025-11-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(GenomicRanges)
+library(Signac)
+library(AnnotationHub)
+library(EnsDb.Mmusculus.v79)
+library(JASPAR2020)
+library(TFBSTools)
+library(BSgenome.Mmusculus.UCSC.mm10)
+library(Seurat)
+
+# Set seed
+set.seed(69)
+
+# Read in CellRanger outputs
+counts <- Read10X_h5(filename = "path/to/snatac/files/filtered_peak_bc_matrix.h5")
+metadata <- read.csv(file = "path/to/snatac/files/singlecell.csv", header = TRUE, row.names = 1)
+chrom_assay <- CreateChromatinAssay(counts = counts, sep = c(":", "-"), fragments = "path/to/snatac/files/fragments.tsv.gz", min.cells = 10, min.features = 200)
+
+# Load scRNA-Seq Seurat object and update
+load("path/to/seurat/object/Analysis_1_object_post_UMAP_res_1_260319_v3_DIET_recoloured_alex.Robj") %>%
+  UpdateSeuratObject()
+
+# Load cluster annotation key
+annotation_key <- read.csv("path/to/annotation/key/ClusterAnnotations_Ryan.csv")
+```
+
+########################
+# Pre-process data
+########################
+
+```{r}
+# Convert cluster IDs to names - Seurat object meta data
+diet_regions.combined.final1.v3$seurat_clusters <- factor(x = annotation_key$cluster_name[match(diet_regions.combined.final1.v3$res.1, annotation_key$cluster_number)],
+                                                          levels = annotation_key$cluster_name)
+
+# Set Idents
+Idents(diet_regions.combined.final1.v3) <- "seurat_clusters"
+
+# Generate Seurat object
+atac_obj <- CreateSeuratObject(counts = chrom_assay, assay = "peaks", meta.data = metadata)
+
+# Identify and remove features corresponding to chromosome scaffolds
+peaks.keep <- seqnames(granges(atac_obj)) %in% standardChromosomes(granges(atac_obj))
+atac_obj <- atac_obj[as.vector(peaks.keep), ]
+
+# Extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+
+# Change to UCSC style since the data was mapped to mm10
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "mm10"
+
+# Add the gene information to the object
+Annotation(atac_obj) <- annotations
+
+# Compute nucleosome signal score per cell
+atac_obj <- NucleosomeSignal(object = atac_obj)
+
+# Compute TSS enrichment score per cell
+atac_obj <- TSSEnrichment(object = atac_obj)
+
+# Add fraction of reads in peaks
+atac_obj$pct_reads_in_peaks <- atac_obj$peak_region_fragments / atac_obj$passed_filters * 100
+```
+
+########################
+# Normalisation, dimensionality reduction and clustering
+########################
+
+```{r}
+# Perform term frequency-inverse document frequency (TF-IDF) normalisation
+atac_obj <- RunTFIDF(atac_obj)
+
+# Optional: only use top variable features. Set min.cutoff = 'q0' to include all features
+atac_obj <- FindTopFeatures(atac_obj, min.cutoff = 'q0')
+
+# Perform singular value decomposition (SVD) dimensionality reduction
+atac_obj <- RunSVD(atac_obj)
+
+# Perform standard clustering steps
+atac_obj <- RunUMAP(object = atac_obj, reduction = 'lsi', dims = 2:30)
+atac_obj <- FindNeighbors(object = atac_obj, reduction = 'lsi', dims = 2:30)
+atac_obj <- FindClusters(object = atac_obj, verbose = FALSE, algorithm = 3, resolution = c(0.2, 0.4, 0.6, 0.8, 1))
+```
+
+########################
+# Create gene activity matrix
+########################
+
+```{r}
+# Calculate inferred gene activity matrix
+gene.activities <- GeneActivity(atac_obj)
+
+# Add the gene activity matrix to the Seurat object as a new assay and normalize it
+atac_obj[['RNA']] <- CreateAssayObject(counts = gene.activities)
+atac_obj <- NormalizeData(object = atac_obj, assay = 'RNA', normalization.method = 'LogNormalize', scale.factor = median(atac_obj$nCount_RNA))
+
+# Set as default assay
+DefaultAssay(atac_obj) <- 'RNA'
+
+# Find markers between each cluster
+gene_markers <- FindAllMarkers(object = atac_obj, test.use = 'wilcox', min.pct = 0.05)
+gene_markers_sig <- gene_markers[gene_markers$avg_log2FC >= 0.5 & gene_markers$p_val_adj <= 0.05, ] %>% dplyr::arrange(desc(avg_log2FC))
+
+# Save output
+write.csv(gene_markers, file = "DifferentiallyExpressedGenes_Predicted.csv")
+```
+
+########################
+# Compare data with scRNA-Seq data via label transfer analysis
+########################
+
+```{r}
+# Re-set the default assay
+DefaultAssay(atac_obj) <- 'RNA'
+
+# Perform label transfer analysis
+transfer.anchors <- FindTransferAnchors(reference = diet_regions.combined.final1.v3, query = atac_obj, reduction = 'cca')
+predicted.labels <- TransferData(anchorset = transfer.anchors, refdata = diet_regions.combined.final1.v3$seurat_clusters, weight.reduction = atac_obj[['lsi']], dims = 2:30)
+
+# Save label transfer results
+write.csv(predicted.labels, file = "LabelTransferResults.csv")
+
+# Add labels to Seurat object
+atac_obj <- AddMetaData(object = atac_obj, metadata = predicted.labels)
+atac_obj$predicted.id <- factor(x = atac_obj$predicted.id, levels = annotation_key$cluster_name)
+atac_obj@misc$scrna_colours <- diet_regions.combined.final1.v3@misc$cols
+```
+
+########################
+# Identify differentially accessible peaks
+########################
+
+```{r}
+# Re-set the default assay
+DefaultAssay(atac_obj) <- 'peaks'
+
+# Find markers between each cluster
+peak_markers <- FindAllMarkers(object = atac_obj, test.use = 'wilcox', min.pct = 0.05)
+
+# Identify closest genes to each differentially accessible peak
+closest_genes <- ClosestFeature(atac_obj, regions = row.names(peak_markers))
+
+# Append gene names
+peak_markers$closest_gene <- closest_genes$gene_name[match(peak_markers$gene, closest_genes$query_region)]
+
+# Save output
+write.csv(peak_markers, file = "DifferentiallyAccessiblePeaks.csv")
+
+# Subset peak markers
+peak_markers_sig <- peak_markers[peak_markers$avg_log2FC >= 0.5 & peak_markers$p_val_adj <= 0.05, ] %>% dplyr::arrange(desc(avg_log2FC))
+```
+
+########################
+# Identify enriched motifs among differentially accessible peaks
+########################
+
+```{r}
+# Extract GRanges and counts
+peaks <- granges(atac_obj)
+peak_counts <- GetAssayData(atac_obj, assay = "peaks", slot = "counts")
+
+# Keep only standard chromosomes
+standard_chrs <- paste0("chr", c(1:22, "X", "Y"))
+present_standard_chrs <- intersect(seqlevels(peaks), standard_chrs)
+peaks <- keepSeqlevels(peaks, present_standard_chrs, pruning.mode = "coarse")
+
+# Ensure UCSC style
+seqlevelsStyle(peaks) <- "UCSC"
+
+# Assign genome seqinfo
+seqinfo(peaks) <- seqinfo(BSgenome.Mmusculus.UCSC.mm10)[seqlevels(peaks)]
+
+# Trim out-of-bound peaks
+peaks <- trim(peaks)
+
+# Rebuild names from trimmed coordinates
+new_peak_names <- paste0(seqnames(peaks), "-", start(peaks), "-", end(peaks))
+names(peaks) <- new_peak_names
+
+# Update rownames of count matrix
+rownames(peak_counts) <- new_peak_names
+
+# Make sure names are unique
+names(peaks) <- make.unique(names(peaks))
+rownames(peak_counts) <- make.unique(rownames(peak_counts))
+
+# Rebuild ChromatinAssay
+new_peaks_assay <- CreateChromatinAssay(counts = peak_counts, fragments = "path/to/snatac/files/fragments.tsv.gz", ranges = peaks, genome = "mm10")
+atac_obj[["peaks"]] <- new_peaks_assay
+
+# Add the gene information to the object
+Annotation(atac_obj) <- annotations
+
+# Get a list of motif position frequency matrices from the JASPAR database
+pfm <- getMatrixSet(x = JASPAR2020, opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE))
+
+# Add motif information
+atac_obj <- AddMotifs(object = atac_obj, genome = BSgenome.Mmusculus.UCSC.mm10, pfm = pfm)
+
+# Identify enriched motifs for each cluster
+enriched_motifs <- lapply(X = unique(peak_markers_sig$cluster), FUN = function(x) {
+  # Identify features to input
+  features.to.use <- peak_markers_sig %>% dplyr::filter(cluster == x) %>% rownames() %>% .[. %in% rownames(atac_obj)]
+  
+  # Display cluster being tested and number of features to test
+  message("Cluster ", x, ": ", length(features.to.use), " features to test")
+  
+  # Display warning message if too few features are present
+  if (length(features.to.use) < 100) {
+    warning("Cluster ", x, " has too few features (", length(features.to.use), "). Skipping.")
+    return(NULL)
+  }
+
+  # Use these an input into motif enrichment analysis
+  enrich <- FindMotifs(object = atac_obj, features = features.to.use, assay = "peaks", p.adjust.method = "bonferroni")
+  
+  # Add column indicating cluster
+  enrich$cluster <- x
+  
+  return(enrich)
+}) %>% bind_rows()
+
+# Filter enriched motifs table for significant results and re-order
+enriched_motifs <- enriched_motifs %>%
+  dplyr::filter(p.adjust <= 0.05) %>%
+  dplyr::arrange(p.adjust)
+
+# Save files
+write.csv(enriched_motifs, file = "EnrichedMotifs.csv")
+```

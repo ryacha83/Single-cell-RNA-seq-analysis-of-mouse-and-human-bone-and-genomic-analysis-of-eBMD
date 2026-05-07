@@ -1,0 +1,122 @@
+---
+title: "Mouse scRNA-seq"
+
+---
+
+```{r setup, include=FALSE}
+# Read in 14 gene matrices (5x diaphysis, 5x metaphysis and 4x marrow samples - marrow #2 was excluded due to failed capture) from 10X output using Seurat package.
+# Combine, QC, assign clusters, find markers and save object.
+# Note: due to the amount of data, analysis was run on a High Performance Computer (HPC)
+
+#Load libraries
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(cowplot)
+library(ggplot2)
+library(plyr)
+
+# Read in 10x data contaning barcode and cell ID matrices
+Diaphysis_1 <- Read10X(data.dir = "file_location")
+Diaphysis_1 <- CreateSeuratObject(counts = Diaphysis_1, min.cells = 1, min.features = 50)
+Diaphysis_1 <- AddMetaData(Diaphysis_1, metadata="Diaphysis_1", col.name="Sample")
+
+Diaphysis_2 <- Read10X(data.dir = "file_location")
+Diaphysis_2 <- CreateSeuratObject(counts = Diaphysis_2, min.cells = 1, min.features = 50)
+Diaphysis_2 <- AddMetaData(Diaphysis_2, metadata="Diaphysis_2", col.name="Sample")
+
+Diaphysis_3 <- Read10X(data.dir = "file_location")
+Diaphysis_3 <- CreateSeuratObject(counts = Diaphysis_3, min.cells = 1, min.features = 50)
+Diaphysis_3 <- AddMetaData(Diaphysis_3, metadata="Diaphysis_3", col.name="Sample")
+
+Diaphysis_4 <- Read10X(data.dir = "file_location")
+Diaphysis_4 <- CreateSeuratObject(counts = Diaphysis_4, min.cells = 1, min.features = 50)
+Diaphysis_4 <- AddMetaData(Diaphysis_4, metadata="Diaphysis_4", col.name="Sample")
+
+Diaphysis_5 <- Read10X(data.dir = "file_location")
+Diaphysis_5 <- CreateSeuratObject(counts = Diaphysis_5, min.cells = 1, min.features = 50)
+Diaphysis_5 <- AddMetaData(Diaphysis_5, metadata="Diaphysis_5", col.name="Sample")
+
+Metaphysis_1 <- Read10X(data.dir = "file_location")
+Metaphysis_1 <- CreateSeuratObject(counts = Metaphysis_1, min.cells = 1, min.features = 50)
+Metaphysis_1 <- AddMetaData(Metaphysis_1, metadata="Metaphysis_1", col.name="Sample")
+
+Metaphysis_2 <- Read10X(data.dir = "file_location")
+Metaphysis_2 <- CreateSeuratObject(counts = Metaphysis_2, min.cells = 1, min.features = 50)
+Metaphysis_2 <- AddMetaData(Metaphysis_2, metadata="Metaphysis_2", col.name="Sample")
+
+Metaphysis_3 <- Read10X(data.dir = "file_location")
+Metaphysis_3 <- CreateSeuratObject(counts = Metaphysis_3, min.cells = 1, min.features = 50)
+Metaphysis_3 <- AddMetaData(Metaphysis_3, metadata="Metaphysis_3", col.name="Sample")
+
+Metaphysis_4 <- Read10X(data.dir = "file_location")
+Metaphysis_4 <- CreateSeuratObject(counts = Metaphysis_4, min.cells = 1, min.features = 50)
+Metaphysis_4 <- AddMetaData(Metaphysis_4, metadata="Metaphysis_4", col.name="Sample")
+
+Metaphysis_5 <- Read10X(data.dir = "file_location")
+Metaphysis_5 <- CreateSeuratObject(counts = Metaphysis_5, min.cells = 1, min.features = 50)
+Metaphysis_5 <- AddMetaData(Metaphysis_5, metadata="Metaphysis_5", col.name="Sample")
+
+Marrow_1 <- Read10X(data.dir = "file_location")
+Marrow_1 <- CreateSeuratObject(counts = Marrow_1, min.cells = 1, min.features = 50)
+Marrow_1 <- AddMetaData(Marrow_1, metadata="Marrow_1", col.name="Sample")
+
+Marrow_3 <- Read10X(data.dir = "file_location")
+Marrow_3 <- CreateSeuratObject(counts = Marrow_3, min.cells = 1, min.features = 50)
+Marrow_3 <- AddMetaData(Marrow_3, metadata="Marrow_3", col.name="Sample")
+
+Marrow_4 <- Read10X(data.dir = "file_location")
+Marrow_4 <- CreateSeuratObject(counts = Marrow_4, min.cells = 1, min.features = 50)
+Marrow_4 <- AddMetaData(Marrow_4, metadata="Marrow_4", col.name="Sample")
+
+Marrow_5 <- Read10X(data.dir = "file_location")
+Marrow_5 <- CreateSeuratObject(counts = Marrow_5, min.cells = 1, min.features = 50)
+Marrow_5 <- AddMetaData(Marrow_5, metadata="Marrow_5", col.name="Sample")
+
+#Merge 
+samples_merged <- merge(Diaphysis_1, y = c(Diaphysis_2, Diaphysis_3, Diaphysis_4, Diaphysis_5, Metaphysis_1, Metaphysis_2, Metaphysis_3, Metaphysis_4, Metaphysis_5, Marrow_1, Marrow_3, Marrow_4, Marrow_5))
+
+# Mitochondria Genes and number of genes QC
+samples_merged[["percent.mt"]] <- PercentageFeatureSet(samples_merged, pattern = "^mt-")
+
+VlnPlot(samples_merged, features = c("nFeature_RNA"), pt.size = 0.01, y.max = NULL, split.by = "Sample") 
+
+VlnPlot(samples_merged, features = c("percent.mt"), pt.size = 0.01, y.max = NULL, split.by = "Sample") 
+
+#Filter based on nFeature 100, very low threshold as many CD45neg cells h
+samples_merged <- subset(samples_merged, subset = nFeature_RNA > 300)
+samples_merged <- subset(samples_merged, subset = percent.mt < 20)
+
+#Normalise data
+samples_merged <- NormalizeData(samples_merged, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find variable features
+samples_merged <- FindVariableGenes(object = samples_merged, mean.function = ExpMean, dispersion.function = LogVMR,
+                           x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+#Scale data
+all.genes <- rownames(samples_merged)
+samples_merged <- ScaleData(samples_merged, features = all.genes)
+
+#Linear dimensional reduction
+samples_merged <- RunPCA(samples_merged, features = VariableFeatures(object = samples_merged))
+
+#Clustering and UMAP
+samples_merged <- FindClusters(object = samples_merged, reduction.type = "pca", dims.use = 1:40,
+                                          resolution = 1, print.output = 0, save.SNN = TRUE)
+
+samples_merged <- RunUMAP(samples_merged, dims = 1:40)
+
+pdf("plots/umap_resolution_1.pdf", width = 10, height = 10)
+DimPlot(samples_merged, group.by = "RNA_snn_res.1", pt.size = 0.01, label = T, raster = F)
+dev.off()
+
+#Find all markers 
+markers <- FindAllMarkers(object = samples_merged, logfc.threshold = 0.5, only.pos = TRUE, min.pct = 0.25)
+
+#save object
+save(samples_merged, file = "Seurat_object/samples_merged.Robj")
+
+
+
+```
+

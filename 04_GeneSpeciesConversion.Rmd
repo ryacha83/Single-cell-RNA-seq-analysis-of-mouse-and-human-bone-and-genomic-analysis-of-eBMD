@@ -1,0 +1,58 @@
+---
+title: "Generate data frame to convert mouse and human gene orthologs"
+output: html_document
+date: "2025-11-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(biomaRt)
+
+# Set seed
+set.seed(69)
+
+# Load mouse Mart
+ensembl_mus <- useEnsembl(biomart = "ensembl", dataset = "mmusculus_gene_ensembl", host = "https://dec2021.archive.ensembl.org")
+ensembl_human <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org")
+```
+
+#######################
+# Generate gene conversion key
+########################
+
+```{r}
+# Get full list of mouse genes - 55,416 entries
+all_mouse_genes <- getBM(attributes = c("mgi_id", "ensembl_gene_id", "mgi_symbol", "gene_biotype"), mart = ensembl_mus)
+all_human_genes <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"), mart = ensembl_human)
+
+# Identify mouse gene symbols from ensembl IDs
+LDS <- getLDS(attributes = "ensembl_gene_id", filters = "ensembl_gene_id", values = all_mouse_genes$ensembl_gene_id, mart = ensembl_mus,
+              attributesL = c("hgnc_symbol", "ensembl_gene_id", "gene_biotype"), martL = ensembl_human, uniqueRows = T)
+colnames(LDS)[1] <- "ensembl_gene_id"
+coverage <- getLDS(attributes = "ensembl_gene_id", filters = "ensembl_gene_id", values = all_mouse_genes$ensembl_gene_id, mart = ensembl_mus,
+                   attributesL = c("mmusculus_homolog_orthology_confidence", "mmusculus_homolog_goc_score", "mmusculus_homolog_wga_coverage"),
+                   martL = ensembl_human, uniqueRows = T)
+colnames(coverage)[1] <- "ensembl_gene_id"
+  
+# Combine data - 26,390 entries
+all_genes <- all_mouse_genes %>% inner_join(LDS, by = "ensembl_gene_id")
+all_genes$Mouse.orthology.confidence <- coverage$Mouse.orthology.confidence..0.low..1.high.[match(all_genes$ensembl_gene_id, coverage$ensembl_gene_id)]
+all_genes$Mouse.Gene.order.conservation.score <- coverage$Mouse.Gene.order.conservation.score[match(all_genes$ensembl_gene_id, coverage$ensembl_gene_id)]
+all_genes$Mouse.Whole.genome.alignment.coverage <- coverage$Mouse.Whole.genome.alignment.coverage[match(all_genes$ensembl_gene_id, coverage$ensembl_gene_id)]
+
+# Indicate whether entries are unique for mouse and human
+all_genes$mouse_unique <- sapply(X = all_genes$ensembl_gene_id, FUN = function(x){nrow(all_genes[all_genes$ensembl_gene_id == x, ])})
+all_genes$human_unique <- sapply(X = all_genes$Gene.stable.ID.1, FUN = function(x){nrow(all_genes[all_genes$Gene.stable.ID.1 == x, ])})
+
+# Save
+write.csv(x = all_genes, file = "All_HumanMouseGenes.csv")
+```

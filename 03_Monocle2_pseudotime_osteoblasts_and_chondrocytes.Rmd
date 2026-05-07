@@ -1,0 +1,114 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-11-18"
+---
+
+```{r setup, include=FALSE}
+# Read in Seurat object of non-haematopoietic cells
+# Subset out osteoblasts and chondrocyte clusters
+# Ran monocle2
+
+library(Seurat)
+library(monocle)
+library(dplyr)
+library(Matrix)
+library(cowplot)
+library(ggplot2)
+
+#load Seurat object of non-haematopoietic cells
+load("Seurat_object/non_haematopoietic_clean.Robj")
+
+############### Pseudotime analysis of osteoblats lineage clusters #############################
+
+#Subset osteoblast lineage clusters ("3" = MSCs, "7" = Osteoprogenitors, "15" = Fibroblasts, "0" = Pre-osteoblasts, "10" = Mature osteoblasts, "14" = Early osteocytes)
+ob <- subset(non_haematopoietic_clean, idents = c("0", "3", "7", "15", "10", "14"))
+
+#Extract data, phenotype data, and feature data from the SeuratObject
+data <- as(as.matrix(ob@assays$RNA@counts), 'sparseMatrix')
+
+pd <- new('AnnotatedDataFrame', data = ob@meta.data)
+
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+
+#Construct monocle cds
+ob <- newCellDataSet(data,
+                         phenoData = pd,
+                         featureData = fd,
+                         lowerDetectionLimit = 0.5,
+                         expressionFamily = negbinomial.size())
+
+
+ob <- estimateSizeFactors(ob)
+ob <-estimateDispersions(ob)
+
+#Find DEGs
+clustering_DEG_genes <- differentialGeneTest(ob, fullModelFormulaStr = '~RNA_snn_res.1.2')
+
+#Use top 1000 genes from the clustering_DEG_genes for ordering
+ordering_genes_top_1k <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
+
+#Order dataset based on significant genes
+ob_top_1k <- setOrderingFilter(ob, ordering_genes_top_1k)
+
+#Reduce dimensionality - reduced to two dimensions in this case for visualisation
+ob_top_1k <- reduceDimension(ob_top_1k, max_components = 2,
+                            method = 'DDRTree')
+
+#Order cells along the trajectory
+ob_top_1k <- orderCells(ob_top_1k, reverse = TRUE)
+
+#Plot trajectory without determining root state
+pdf("plots/Pseudotime_trajectory_osteoblasts.pdf", width = 6, height = 5.5)
+plot_cell_trajectory(ob_top_1k, color_by = "RNA_snn_res.1.2", cell_size = 1) 
+dev.off()
+
+
+############### Pseudotime analysis of chondrocyte clusters #############################
+
+#Subset ostechondrolast lineage clusters ("1" = Resting chindrocytes, "4" = Pre-hypertrophic chondrocytes, "5" = Hypertrophic chondrocytes)
+chondro <- subset(non_haematopoietic_clean, idents = c("1", "4", "5"))
+
+#Extract data, phenotype data, and feature data from the Seuratchondroject
+data <- as(as.matrix(chondro@assays$RNA@counts), 'sparseMatrix')
+
+pd <- new('AnnotatedDataFrame', data = chondro@meta.data)
+
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+
+#Construct monocle cds
+chondro <- newCellDataSet(data,
+                         phenoData = pd,
+                         featureData = fd,
+                         lowerDetectionLimit = 0.5,
+                         expressionFamily = negbinomial.size())
+
+
+chondro <- estimateSizeFactors(chondro)
+chondro <-estimateDispersions(chondro)
+
+#Find DEGs
+clustering_DEG_genes <- differentialGeneTest(chondro, fullModelFormulaStr = '~RNA_snn_res.1.2')
+
+#Use top 1000 genes from the clustering_DEG_genes for ordering
+ordering_genes_top_1k <- row.names(clustering_DEG_genes)[order(clustering_DEG_genes$qval)][1:1000]
+
+#Order dataset based on significant genes
+chondro_top_1k <- setOrderingFilter(chondro, ordering_genes_top_1k)
+
+#Reduce dimensionality - reduced to two dimensions in this case for visualisation
+chondro_top_1k <- reduceDimension(chondro_top_1k, max_components = 2,
+                            method = 'DDRTree')
+
+#Order cells along the trajectory
+chondro_top_1k <- orderCells(chondro_top_1k, reverse = TRUE)
+
+#Plot trajectory without determining root state
+pdf("plots/Pseudotime_trajectory_chondrocytes.pdf", width = 6, height = 5.5)
+plot_cell_trajectory(chondro_top_1k, color_by = "RNA_snn_res.1.2", cell_size = 1) 
+dev.off()
+
+```
+

@@ -1,0 +1,387 @@
+---
+title: "Perform further interaction analyses on CellPhoneDB outputs"
+output: html_document
+date: '2025-11-05'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(Seurat)
+library(data.table)
+library(readxl)
+library(igraph)
+library(stringr)
+library(ReactomePA)
+library(biomaRt)
+
+# Set seed
+set.seed(69)
+
+# Load Seurat object and update
+load("path/to/seurat/object/Analysis_1_object_post_UMAP_res_1_260319_v3_DIET_recoloured_alex.Robj") %>%
+  UpdateSeuratObject()
+
+# Load cluster annotation key
+annotation_key <- read.csv("path/to/annotation/key/ClusterAnnotations_Ryan.csv")
+
+# Load all human_mouse ortholgos
+all_genes <- read.csv("path/to/gene/map/All_HumanMouseGenes.csv", row.names = 1)
+
+# Load full list of Reactome terms, and their relationships
+reactome_pathways_all <- fread("path/to/reactomedb/files/ReactomePathways.txt", header = F)
+reactome_pathways_hierarchy <- fread("path/to/reactomedb/files/ReactomePathwaysRelation.txt", header = F)
+
+# Load CellPhoneDB results
+pvals <- read.delim("path/to/cellphonedb/outputs/statistical_analysis_pvalues_05_16_2025_174230.txt", check.names = F)
+means <- read.delim("path/to/cellphonedb/outputs/statistical_analysis_significant_means_05_16_2025_174230.txt", check.names = F)
+decon <- read.delim("path/to/cellphonedb/outputs/statistical_analysis_deconvoluted_05_16_2025_174230.txt", check.names = F)
+pcent <- read.delim("path/to/cellphonedb/outputs/statistical_analysis_deconvoluted_percents_05_16_2025_174230.txt", check.names = F)
+score <- read.delim("path/to/cellphonedb/outputs/statistical_analysis_interaction_scores_05_16_2025_174230.txt", check.names = F)
+```
+
+########################
+# Pre-process the data
+########################
+
+```{r}
+# Convert cluster IDs to names - Seurat object meta data
+diet_regions.combined.final1.v3$seurat_clusters <- factor(x = annotation_key$cluster_name[match(diet_regions.combined.final1.v3$res.1, annotation_key$cluster_number)],
+                                                          levels = annotation_key$cluster_name)
+
+# Set Idents
+Idents(diet_regions.combined.final1.v3) <- "seurat_clusters"
+```
+
+########################
+# Prepare ReactomeDB hierarchy for analysis
+########################
+
+```{r}
+# Filter ReactomeDB databases for mouse terms
+reactome_pathways_all <- reactome_pathways_all %>%
+  setNames(c("ID", "Name", "Species")) %>%
+  filter(str_detect(Species, "Mus musculus"))
+
+reactome_pathways_hierarchy <- reactome_pathways_hierarchy %>%
+  setNames(c("Parent", "Child")) %>%
+  filter(str_detect(Parent, "^R-MMU-"), str_detect(Child, "^R-MMU-"))
+
+# Combine tables
+reactome_pathways_hierarchy <- reactome_pathways_hierarchy %>%
+  mutate(Parent_ID = Parent, Child_ID = Child) %>%
+  left_join(reactome_pathways_all %>% dplyr::select(ID, Name), by = c("Parent_ID" = "ID"), suffix = c("", "_parent")) %>%
+  left_join(reactome_pathways_all %>% dplyr::select(ID, Name), by = c("Child_ID" = "ID"), suffix = c("", "_child")) %>%
+  dplyr::select(Parent_ID, Name, Child_ID, Name_child) %>%
+  dplyr::rename(Parent_Name = Name, Child_Name = Name_child)
+
+# Calculate term levels
+all_terms <- unique(c(reactome_pathways_hierarchy$Parent_ID, reactome_pathways_hierarchy$Child_ID))
+top_level_terms <- setdiff(unique(reactome_pathways_hierarchy$Parent_ID), unique(reactome_pathways_hierarchy$Child_ID))
+
+levels_df <- data.frame(Term = all_terms, Level = NA_integer_)
+levels_df$Level[levels_df$Term %in% top_level_terms] <- 1
+
+repeat {
+  n_before <- sum(!is.na(levels_df$Level))
+
+  # For all edges where parent level is known and child level is unknown, assign child level = parent level + 1
+  for(i in seq_len(nrow(reactome_pathways_hierarchy))) {
+    parent <- reactome_pathways_hierarchy$Parent_ID[i]
+    child <- reactome_pathways_hierarchy$Child_ID[i]
+  
+    parent_level <- levels_df$Level[levels_df$Term == parent]
+    child_level <- levels_df$Level[levels_df$Term == child]
+  
+    if (!is.na(parent_level) && is.na(child_level)) {levels_df$Level[levels_df$Term == child] <- parent_level + 1}
+  }
+
+  n_after <- sum(!is.na(levels_df$Level))
+  
+  # Stop when no new levels are assigned
+  if (n_before == n_after) break
+}
+
+# Merge with original dataframe
+reactome_pathways_hierarchy <- reactome_pathways_hierarchy %>%
+  left_join(levels_df %>% dplyr::rename(Parent_Level = Level), by = c("Parent_ID" = "Term")) %>%
+  left_join(levels_df %>% dplyr::rename(Child_Level = Level), by = c("Child_ID" = "Term"))
+
+# Calculate directed acyclic graph (DAG) detailing the relationships between terms
+edges <- reactome_pathways_hierarchy %>% dplyr::select(Parent_ID, Child_ID) %>% distinct()
+g <- graph_from_data_frame(edges, directed = TRUE)
+roots <- V(g)[degree(g, mode = "in") == 0]$name
+ordered_terms <- c()
+for (r in roots) {
+  dfs_result <- dfs(g, root = r, order = TRUE, unreachable = FALSE)
+  ordered_terms <- c(ordered_terms, V(g)[dfs_result$order]$name)
+}
+ordered_terms <- ordered_terms[!is.na(ordered_terms)]
+
+# Named vector: ID -> Name
+id_to_name <- reactome_pathways_hierarchy %>%
+  dplyr::select(ID = Parent_ID, Name = Parent_Name) %>%
+  bind_rows(reactome_pathways_hierarchy %>% dplyr::select(ID = Child_ID, Name = Child_Name)) %>%
+  distinct() %>%
+  deframe()
+```
+
+########################
+# Generate summary data
+########################
+
+```{r}
+# Generate mapping of mouse to human genes
+gene_mapping <- data.frame(mgi_symbol = rownames(diet_regions.combined.final1.v3)) %>%
+  left_join(all_genes, by = "mgi_symbol") %>%
+  filter(!is.na(HGNC.symbol)) %>%
+  distinct(HGNC.symbol, .keep_all = TRUE)
+    
+# Build named vector for HGNC -> MGI mapping
+hgnc_to_mgi <- gene_mapping %>%
+  filter(HGNC.symbol != "", mgi_symbol != "") %>%
+  distinct(HGNC.symbol, mgi_symbol) %>%
+  deframe()
+
+# Write function to extract complex genes
+get_complex_genes <- function(partner_col, decon) {
+  complex_names <- str_remove(partner_col, "^complex:")
+  sapply(complex_names, function(x) {
+    if (is.na(x) || x == "") return("")
+    paste(unique(decon %>% filter(complex_name == x) %>% pull(gene)), collapse = "; ")
+  })
+}
+
+# Write function to convert HGNC gene strings to MGI
+convert_complex_to_mgi <- function(hgnc_string, mapping_vector) {
+  if (hgnc_string == "") return("")
+  genes <- unlist(strsplit(hgnc_string, ";\\s*"))
+  mgi_symbols <- mapping_vector[genes]
+  mgi_symbols[is.na(mgi_symbols)] <- genes[is.na(mgi_symbols)]
+  paste(mgi_symbols, collapse = "; ")
+}
+
+# Generate summary table
+results_summary <- means %>%
+  # Process means table
+  pivot_longer(cols = 15:ncol(.), names_to = "variable", values_to = "mean") %>%
+  filter(!is.na(mean)) %>%
+  separate(variable, into = c("cell_type_a", "cell_type_b"), sep = "\\|", remove = FALSE) %>%
+  # Add gene mapping for partners
+  left_join(gene_mapping %>% filter(HGNC.symbol != "") %>%
+              dplyr::select(HGNC.symbol, ensembl_gene_id, mgi_symbol) %>%
+              dplyr::rename(gene_a = HGNC.symbol, ensembl_gene_a = ensembl_gene_id, mgi_symbol_a = mgi_symbol),
+            by = "gene_a") %>%
+  left_join(gene_mapping %>% filter(HGNC.symbol != "") %>%
+              dplyr::select(HGNC.symbol, ensembl_gene_id, mgi_symbol) %>%
+              dplyr::rename(gene_b = HGNC.symbol, ensembl_gene_b = ensembl_gene_id, mgi_symbol_b = mgi_symbol),
+            by = "gene_b") %>%
+  # Add p-values and scores
+  left_join(pvals %>%
+              pivot_longer(cols = 14:ncol(.), names_to = "variable", values_to = "pval") %>%
+              filter(pval <= 0.05) %>%
+              separate(variable, into = c("cell_type_a", "cell_type_b"), sep = "\\|", remove = FALSE) %>%
+              dplyr::select(id_cp_interaction, variable, pval),
+            by = c("id_cp_interaction", "variable")) %>%
+  left_join(score %>%
+              pivot_longer(cols = 14:ncol(.), names_to = "variable", values_to = "score") %>%
+              filter(score > 0) %>%
+              separate(variable, into = c("cell_type_a", "cell_type_b"), sep = "\\|", remove = FALSE) %>%
+              dplyr::select(id_cp_interaction, variable, score),
+            by = c("id_cp_interaction", "variable")) %>%
+  # Replace NA mapping columns with empty string
+  mutate(across(c(ensembl_gene_a, mgi_symbol_a, ensembl_gene_b, mgi_symbol_b), ~ ifelse(is.na(.), "", .))) %>%
+  relocate(ensembl_gene_a, mgi_symbol_a, ensembl_gene_b, mgi_symbol_b, .before = everything()) %>%
+  # Add columns showing genes for complexes
+  mutate(complex_genes_a       = get_complex_genes(partner_a, decon),
+         complex_genes_b       = get_complex_genes(partner_b, decon),
+         complex_mgi_symbols_a = sapply(complex_genes_a, convert_complex_to_mgi, mapping_vector = hgnc_to_mgi),
+         complex_mgi_symbols_b = sapply(complex_genes_b, convert_complex_to_mgi, mapping_vector = hgnc_to_mgi)) %>%
+  # Convert to factor
+  mutate(cell_type_a = factor(cell_type_a, levels = annotation_key$cluster_name), cell_type_b = factor(cell_type_b, levels = annotation_key$cluster_name)) %>%
+  # Re-order table
+  arrange(cell_type_a, cell_type_b, desc(score), pval, desc(mean)) %>%
+  dplyr::select(variable, interacting_pair, id_cp_interaction,
+                cell_type_a, partner_a, receptor_a, gene_a, complex_genes_a, ensembl_gene_a, mgi_symbol_a, complex_mgi_symbols_a,
+                cell_type_b, partner_b, receptor_b, gene_b, complex_genes_b, ensembl_gene_b, mgi_symbol_b, complex_mgi_symbols_b,
+                annotation_strategy, secreted, is_integrin, directionality, classification, rank, pval, mean, score)
+
+# Save results table
+write.csv(results_summary, file = "CellPhoneDB_InteractionsTable.csv")
+```
+
+########################
+# Perform pathway enrichment analyses for interaction pairs between osteoblasts and selected clusters
+########################
+
+```{r}
+# Create ensembl objects for human and mouse genes
+ensembl_mus <- useEnsembl(biomart = "ensembl", dataset = "mmusculus_gene_ensembl", host = "https://dec2021.archive.ensembl.org")
+ensembl_hum <- useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org")
+
+# Generate mapping table to convert to and from Entrez IDs
+LDS_mouse <- getLDS(attributes = "mgi_symbol", filters = "mgi_symbol", values = row.names(diet_regions.combined.final1.v3), mart = ensembl_mus,
+                    attributesL = c("entrezgene_id", "ensembl_gene_id"), martL = ensembl_mus, uniqueRows = T)
+LDS_human <- getLDS(attributes = "mgi_symbol", filters = "mgi_symbol", values = row.names(diet_regions.combined.final1.v3), mart = ensembl_mus,
+                    attributesL = c("hgnc_symbol", "entrezgene_id", "ensembl_gene_id"), martL = ensembl_hum, uniqueRows = T)
+gene_mapping_2 <- left_join(LDS_mouse, LDS_human, by = "MGI.symbol")
+colnames(gene_mapping_2) <- c("MGI_Symbol", "EntrezID_Mouse", "Ensembl_Mouse", "HGNC_Symbol", "EntrezID_Human", "Ensembl_Human")
+
+# Write function to convert Entrez IDs in tables to MGI symbols
+convert_gene_ids <- function(gene_list, map) {
+  m <- setNames(map$MGI_Symbol, as.character(map$EntrezID_Mouse))
+  sapply(gene_list, function(x) {paste(na.omit(m[unlist(strsplit(x,"/"))]), collapse = "/")})
+}
+
+# Write function to calculate Jaccard similarity
+jaccard <- function(a, b) length(intersect(a, b)) / length(union(a, b))
+
+# Write function to add root term to each row
+get_root_name <- function(term_id, g, id_to_name) {
+  if (!(term_id %in% V(g)$name)) return(NA)
+  ancestors <- subcomponent(g, term_id, mode = "in")
+  if (length(ancestors) == 0) return(id_to_name[[term_id]])
+  ancestor_ids <- names(ancestors)
+  in_degrees <- degree(g, v = ancestor_ids, mode = "in")
+  root_candidates <- ancestor_ids[in_degrees == 0]
+  if (length(root_candidates) == 0) return(NA)
+  root_id <- root_candidates[1]
+  id_to_name[[root_id]]
+}
+
+# Specify clusters of interest
+cells.to.plot <- c("31. Endothelial cells", "32. Vascular SMCs", "27. Chondrocytes", "30. Osteoclasts")
+
+# Generate visualisations for each cluster
+cluster_interactions <- lapply(X = cells.to.plot, FUN = function(cluster){
+
+  ##########   Process data   ##########
+  
+  # Subset interactions for cell types of interest, excluding self-signalling
+  interactions <- results_summary %>%
+    filter(cell_type_a %in% c("28. Osteoblasts", cluster), cell_type_b %in% c("28. Osteoblasts", cluster), cell_type_a != cell_type_b)
+  
+  # Extract list of genes involved in interactions between clusters
+  int_genes <- c(interactions$mgi_symbol_a, interactions$mgi_symbol_b, strsplit(interactions$complex_mgi_symbols_a, "; "), strsplit(interactions$complex_mgi_symbols_b, "; ")) %>%
+    unlist() %>%
+    unique()
+  
+  # Convert genelists to Entrez IDs
+  int_genes_entrez <- gene_mapping_2 %>%
+    filter(MGI_Symbol %in% int_genes) %>%
+    pull(EntrezID_Mouse)
+  
+  gene_universe <- gene_mapping_2 %>%
+    filter(MGI_Symbol %in% row.names(diet_regions.combined.final1.v3)) %>%
+    pull(EntrezID_Mouse) %>%
+    as.character()
+  
+  # Identify enriched KEGG pathways amongst genes involved in interactions
+  reactome_results <- enrichPathway(gene = int_genes_entrez, organism = "mouse", pAdjustMethod = "bonferroni", pvalueCutoff = 0.05, qvalueCutoff = 0.05, universe = gene_universe)
+
+  # Process results table
+  reactome_results@result <- reactome_results@result %>%
+    # Convert gene IDs back to MGI, p values to log10(p values) and add term levels
+    mutate(MGI_Symbol   = convert_gene_ids(geneID, gene_mapping_2),
+           p.adjust.log = -log10(p.adjust),
+           Level        = if_else(ID %in% top_level_terms, 1, reactome_pathways_hierarchy$Child_Level[match(ID, reactome_pathways_hierarchy$Child_ID)])) %>%
+    # Add indentation to show hierarchy breakdown
+    mutate(order_index = match(ID, ordered_terms), Hierarchical_Name = paste0(strrep("  ", Level - min(Level, na.rm = TRUE)), ID)) %>%
+    # Add root term to table
+    mutate(Root = sapply(ID, get_root_name, g = g, id_to_name = id_to_name)) %>%
+    # Re-order to match hierarchy
+    arrange(order_index)
+  
+  return(reactome_results)
+})
+names(cluster_interactions) <- cells.to.plot
+
+# Combine Reactome results into single dataframe for comparison
+reactome_combined <- imap_dfr(cluster_interactions, function(cluster_data, cluster_name) {cluster_data@result %>% mutate(Cluster = cluster_name, .before = 1)})
+
+# Identify unique terms
+unique_reactome_terms <- imap_dfr(cluster_interactions, ~ .x@result %>% mutate(Cluster = .y, .before = 1)) %>% filter(!ID %in% ID[duplicated(ID)])
+
+# Collapse redundant terms
+cluster_interactions_collapsed <- lapply(X = cells.to.plot, FUN = function(cluster){
+
+  ##########   Set up naming and plotting parameters   ##########
+  
+  # Extract Reactome results
+  results <- cluster_interactions[[cluster]]@result
+  
+  ##########   Process data   ##########
+  
+  # Process results table
+  gene_sets <- results %>%
+    dplyr::select(Description, geneID) %>%
+    distinct() %>%
+    mutate(GeneList = strsplit(geneID, "/")) %>%
+    dplyr::select(Description, GeneList) %>%
+    deframe()
+  term_ids <- names(gene_sets)
+  
+  # Calculate Jaccard similarity between terms to identify those with highly overlapping gene lists
+  jaccard_matrix <- outer(term_ids, term_ids, Vectorize(function(i, j) jaccard(gene_sets[[i]], gene_sets[[j]])))
+  dimnames(jaccard_matrix) <- list(term_ids, term_ids) # Plot as heatmap to view similar terms
+  
+  # Identify highly similar pairs
+  adjacency <- (jaccard_matrix >= 0.8)
+  diag(adjacency) <- FALSE
+  
+  jac_graph <- graph_from_adjacency_matrix(adjacency, mode = "undirected")
+  clusters <- components(jac_graph)$membership
+  
+  term_to_cluster <- tibble(ID = names(clusters), ClusterGroup = clusters) %>%
+    bind_rows(tibble(ID = setdiff(results$ID, names(clusters)), ClusterGroup = max(clusters) + seq_len(length(setdiff(results$ID, names(clusters))))))
+
+  # Prepare ReactomeDB hierarchy information
+  hier_graph <- graph_from_data_frame(reactome_pathways_hierarchy[, c("Parent_ID", "Child_ID")], directed = TRUE)
+  id_to_level <- reactome_combined %>%
+    dplyr::select(ID, Level) %>%
+    distinct() %>%
+    deframe()
+  
+  # Identify level 2 ancestor for each term
+  get_level2_ancestor <- function(term_id) {
+    if (!term_id %in% V(hier_graph)$name) return(NA)
+    anc <- names(subcomponent(hier_graph, term_id, mode = "in"))
+    lvl2 <- anc[id_to_level[anc] == 2]
+    if (length(lvl2)) lvl2[1] else NA
+  }
+
+  level2_map <- tibble(ID = reactome_combined$ID) %>%
+    mutate(Level2_ID = map_chr(ID, get_level2_ancestor))
+  
+  # Process results to remove redundant terms
+  results_clustered <- results %>%
+    # Combine data tables
+    left_join(term_to_cluster, by = c("Description" = "ID")) %>%
+    # Collapse terms into Level 3, ensuring fair representation when multiple level 2 terms have high Jaccard similarity
+    left_join(level2_map, by = "ID") %>%
+    group_by(ClusterGroup, Level2_ID) %>%
+    arrange(abs(Level - 3), Level != 3, p.adjust, .by_group = TRUE) %>%
+    dplyr::slice(1) %>%
+    ungroup() %>%
+    # Annotate unique terms (i.e. terms specific to cluster of interest) and proportion of genes present for each term
+    mutate(Unique = ID %in% unique_reactome_terms$ID[unique_reactome_terms$Cluster == cluster], GenesIncluded = paste0(sub("/.*","", GeneRatio), "/", sub("/.*","", BgRatio))) %>%
+    # Re-order
+    arrange(Root, p.adjust.log)
+  
+  return(results_clustered)
+})
+names(cluster_interactions_collapsed) <- cells.to.plot
+
+# Save Reactome and KEGG enrichment results
+save(cluster_interactions, file = "PathwayEnrichmentResults.rds")
+save(cluster_interactions_collapsed, file = "PathwayEnrichmentResults_Collapsed.rds")
+```

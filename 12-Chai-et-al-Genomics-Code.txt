@@ -1,0 +1,721 @@
+#########################################################################
+# 	EXAMPLE CODE USED IN CHAI ET AL 2026 NATURE GENETICS 		# 
+#							       		#
+# 	Please email John P. Kemp if you require any further		#
+# 	information or clarification regarding this code.		#
+#									#
+# 	All log files, summary data or data used for annotation  	# 
+#	is available upon reasonable request				# 
+#									# 
+# 	Source code for https://www.musculoskeletal-genomics.org/	#
+#	is also available on reasonable request				#
+#									#
+# 	Email: j.kemp2@uq.edu.au					#
+#									#
+#	Last updated: 05/02/2026					#
+#							        	#
+#########################################################################
+#----------------------------------------------------------------------
+# 	FILE CONTENTS
+#----------------------------------------------------------------------
+#	 1. Genome-wide association analyses
+#	 2. Lift-over to Hg38
+#	 3. Conditional and joint analysis
+#	 4. Annotating independent eBMD associated SNPs
+#	 5. Manhattan plots annotated with lead eBMD associated SNPs
+#	 6. Linkage disequilibrium score regression
+#	 7. Identifying high, moderate and low impact mutations
+#	 8. Gene-based tests of association
+#	 9. Manhattan plots annotated with rare skeletal disease genes
+#	10. Competitive gene set analyses and posthoc qc analyses
+#--------------------------------------------------------
+
+#########################################################
+#1.	Genome-wide association analyses 
+#########################################################
+
+#Software: https://alkesgroup.broadinstitute.org/BOLT-LMM/
+
+#Autosomal Chromosome Gwas
+#----------------------------------------------------------------------
+bolt2.3.4 \
+        --bfile=UKBF-EUR-GenoQcF-AutMX \
+        --bgenFile=ukb_imp_chr{1:22}_v3.bgen \
+        --sampleFile=ukb53641_imp_chr1_v3_s487298.sample \
+        --phenoFile=UKBF-EUR-Qus-AutX-Gwas-C.pheno \
+        --remove=UKBF-EUR-Qus-AutX-Gwas-C.remove \
+        --phenoCol=ibmd \
+        --covarFile=UKBF-EUR-Qus-AutX-Gwas-C.pheno \
+        --covarCol=chip \
+        --covarCol=sex \
+        --covarMaxLevels=30 \
+        --qCovarCol=age \
+        --qCovarCol=PC{1:20} \
+        --noBgenIDcheck \
+        --bgenMinINFO=0.3 \
+        --lmmForceNonInf \
+        --LDscoresFile=1KGP3-EUR-GenoQc-Aut-Final.l2.ldscore.txt.gz \
+        --geneticMapFile=genetic_map_hg19_withX.txt.gz \
+        --numThreads=56 \
+        --maxIters=2500 \
+        --verboseStats \
+        --statsFile=UKBF-EUR-Bmd-As-C-BoltLmm-Aut-Gen.txt \
+        --statsFileBgenSnps=UKBF-EUR-Bmd-As-C-BoltLmm-Aut-Imp.txt > UKBF-EUR-Bmd-As-C-BoltLmm-Aut-Imp.log
+
+#Code used to qc and generate phenotype files for analyses is available upon request from approved UK-Biobank researchers
+#Code used to qc and generate bfiles for grm is available upon request 
+#LDscores were manually generated from 1000Genomes European individuals (1KGP3-EUR-GenoQc-Aut-Final.l2.ldscore.txt.gz) - code available on request.
+
+#Sex Chromosome Gwas
+#----------------------------------------------------------------------
+#Code was repurposed, and used in conjunction with ukb53641_imp_chrX_v3_s486647.sample and ukb53641_imp_chrXY_v3_s486333.sample for analyses of X and XY 
+
+#Formatting Sumstats
+#----------------------------------------------------------------------
+awk -v N="448010" 'BEGIN {OFS="\t" ; print "SNPID","RSID","CHR","BP","EA","NEA","EAF","INFO","BETA","SE","P","P.I","P.NI","N"} $8 > 0.3 && $7 > 0.0001 && $7 < 0.9999 { print $2":"$3":"$5":"$6,$1,$2,$3,$5,$6,$7,$8,$11,$12,$10,$14,$16,N}' UKBF-EUR-Bmd-As-C-BoltLmm-Aut-Imp.txt  > UKBF-EUR-Bmd-As-C-Format-Aut-Imp.txt
+
+#Note:
+#----------------------------------------------------------------------
+Formatted results from Autosomes, X (N=448010) and XY (N=447719) were merged to file named: UKBF-EUR-Bmd-As-C-Format-Aut-Imp-BoltLmm-SumStats-Final.txt
+
+
+#########################################################
+#2. Liftover from Hg19 to Hg38 
+#########################################################
+
+#Software: https://pmglab.top/snptracker/
+
+#Downloading Hg19 / GRCh37 data 
+#----------------------------------------------------------------------
+wget https://ftp.ncbi.nih.gov/snp/organisms/human_9606/database/organism_data/RsMergeArch.bcp.gz
+mv RsMergeArch.bcp.gz b151_GRCh19.RsMergeArch.bcp.gz
+
+wget https://ftp.ncbi.nih.gov/snp/organisms/human_9606_b151_GRCh37p13/database/organism_data/b151_SNPChrPosOnRef_105.bcp.gz
+mv SNPHistory.bcp.gz b151_GRCh19.SNPHistory.bcp.gz
+
+wget https://ftp.ncbi.nih.gov/snp/organisms/human_9606/database/organism_data/SNPHistory.bcp.gz
+mv b151_SNPChrPosOnRef_105.bcp.gz b151_SNPChrPosOnRef_GRCh19p105.bcp.gz
+
+wget https://hgdownload.soe.ucsc.edu/gbdb/hg19/liftOver/hg19ToHg38.over.chain.gz
+
+#Downloading Hg38/ GRCh38 data 
+#----------------------------------------------------------------------
+wget https://ftp.ncbi.nih.gov/snp/organisms/human_9606_b151_GRCh38p7/database/organism_data/RsMergeArch.bcp.gz
+mv b151_SNPChrPosOnRef_108.bcp.gz b151_SNPChrPosOnRef_GRCh38p108.bcp.gz
+
+wget https://ftp.ncbi.nih.gov/snp/organisms/human_9606_b151_GRCh38p7/database/organism_data/b151_SNPChrPosOnRef_108.bcp.gz
+mv SNPHistory.bcp.gz b151_GRCh38.SNPHistory.bcp.gz
+
+wget https://ftp.ncbi.nih.gov/snp/organisms/human_9606_b151_GRCh38p7/database/organism_data/SNPHistory.bcp.gz
+mv RsMergeArch.bcp.gz b151_GRCh38.RsMergeArch.bcp.gz
+
+wget https://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz
+
+#Formatting Input File: Note: Chr XY is renamed X to work with SNPTracker
+#----------------------------------------------------------------------
+awk 'BEGIN{OFS="\t"} { if ($3 == "23") {$3 = "X"}; print }' UKBF-EUR-Bmd-As-C-BoltLmm-SumStats-Final.txt | awk 'BEGIN{OFS="\t"} { if ($3 == "25") {$3 = "X"}; print }' > UKBF-EUR-Bmd-As-C-Liftover-Hg19.in
+
+
+#Adding Hg19 Rsids and genomic coordinates based on dbSNP151
+#----------------------------------------------------------------------
+java -Xmx128g -jar snptracker.jar \
+        --no-web \
+        --in UKBF-EUR-Bmd-As-C-Liftover-Hg19.in \
+        --chr 3 \
+        --pos 4 \
+        --ref hg19 \
+        --merge-file   b151_GRCh19.RsMergeArch.bcp.gz \
+        --coor-file    b151_SNPChrPosOnRef_GRCh19p105.bcp.gz \
+        --hist-file    b151_GRCh19.SNPHistory.bcp.gz \
+        --out UKBF-EUR-Bmd-As-C-Hg19dbSnp151
+
+
+#Updating to Hg38 based on updated Rsids
+#----------------------------------------------------------------------
+java -Xmx128g -jar snptracker.jar \
+        --no-web \
+        --in UKBF-EUR-Bmd-As-C-Hg19dbSnp151.result.txt \
+        --rsid 2 \
+        --ref hg19 \
+        --merge-file   b151_GRCh38.RsMergeArch.bcp.gz \
+        --coor-file    b151_SNPChrPosOnRef_GRCh38p108.bcp.gz \
+        --hist-file    b151_GRCh38.SNPHistory.bcp.gz \
+        --out UKBF-EUR-Bmd-As-C-Hg38dbSnp151
+
+#Format Output File: Chr XY (Par) is renamed X / 23 to work with downstream analyses
+#----------------------------------------------------------------------
+cat UKBF-EUR-Bmd-As-C-Hg38dbSnp151.result.txt | awk 'BEGIN{OFS="\t"} { if ($1 == "X") {$1 = "23"}; print }' | awk 'BEGIN{OFS="\t"} { if ($1 == "PAR") {$1 = "23"}; print }' | awk 'BEGIN {OFS="\t" ; print "SNPID","RSID","CHR","BP","EA","NEA","EAF","INFO","BETA","SE","P","P.I","P.NI","N"} NR > 1 {print $1":"$3":"$11":"$12,$2,$1,$3,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20}' | sort -T /./ -k3,3n -k4,4n > UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt
+
+#Formatting data for upload to NHGRI-EBI GWAS Catalog
+#----------------------------------------------------------------------
+awk 'BEGIN {OFS="\t" ; print "chromosome","base_pair_location","effect_allele","other_allele","beta","standard_error","effect_allele_frequency","p_value","variant_id","rs_id","info","n","p_value_infinitesimal_model"} NR > 1 {print $3,$4,$5,$6,$9,$10,$7,$13,$1,$2,$8,$14,$12}' UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt > Chai-et-al-2026.tsv
+
+#Note: Accession number: GCST90726625
+
+
+#########################################################
+#3. Conditional and joint analysis 
+#########################################################
+
+#Software: https://yanglab.westlake.edu.cn/software/gcta/
+
+#Formatting Input File
+#----------------------------------------------------------------------
+awk -F "\t" 'BEGIN {OFS="\t" ; print "SNP","A1","A2","freq","b","se","p","N"} NR > 1 {print $2,$5,$6,$7,$9,$10,$13,$14}' UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt > UKBF-EUR-Bmd-As-C-CojoIn.txt
+
+#Snps to analyse
+#----------------------------------------------------------------------
+awk -F "\t" 'NR > 1 {print $2}' "UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt > UKBF-EUR-Bmd-As-C-SnpQc.txt
+
+#Cojo 
+#----------------------------------------------------------------------
+gcta.1.94.1 \
+        --bfile UKBF-EUR-LdRefRsid-Hg38dbSnp151-Chr1 \
+ 	--extract UKBF-EUR-Bmd-As-C-SnpQc.txt \
+        --chr 1 \
+        --cojo-wind 10000 \
+        --cojo-p 6.638077E-09 \ #See Kemp et al Nat Genetics 2017
+        --cojo-collinear 0.8 \
+        --cojo-file UKBF-EUR-Bmd-As-C-CojoIn.txt \
+        --cojo-slct \
+        --thread-num 16 \
+        --out UKBF-EUR-Bmd-As-C-1
+
+#Note: 
+#UKBF-EUR-LdRefRsid-Hg38dbSnp151-Chr1 corresponds to the LD reference for 50000 randomly selected unrelated European ancestry individuals - code to generate this dataset is available upon request by approved UK-Biobank Researchers   
+#Code was repurposed for analyses of remaining chromosomes - 2 to 23 (X)
+
+
+#########################################################
+#4. Annotating independent eBMD associated SNPs 
+#########################################################
+
+#Concatenating data from all chromosomes 
+#----------------------------------------------------------------------
+cat UKBF-EUR-Bmd-As-C-*.jma.cojo | grep -v SNP | awk '{ if ($1 == "25") {$1 = "23"}; print}' | sort -k1,1n -k3,3n | awk -F " " '{ OFS="\t" ; p = $10 ; q = 1-$10 ; b = $11^2 ; var = 2*p*q*b ; print $2,$1,$3,$10,$11,$12,$13,$9,$14,var}' > file1.txt
+
+#Note: var = 2*p*q*b (BMD variance explained by each SNP) 
+
+#Calculating distance between SNPs on same chr
+#----------------------------------------------------------------------
+cat file1.txt | awk -F "\t" '   BEGIN { OFS=FS ; prev2 = 0 ; prev3 = 0 } #2 = status (0/1) #3 = locus bin
+                        {if ( $2 == prev2 )
+                                { $11 = $3 - prev3 ;
+                                print ;
+                                prev2 = $2 ;
+                                prev3 = $3 }
+                        else if ( $2 != prev2 )
+                                { $11 = -1 ;
+                                print ;
+                                prev2 = $2 ;
+                                prev3 = $3 }
+                        else
+                                { $11 = "X" ;
+                                print ;
+                                prev2 = $2 ;
+                                prev3 = $3 }
+                        }' > file2.txt
+
+
+#Define loci based on +/- 1mb sliding window
+#----------------------------------------------------------------------
+cat file2.txt | awk -F "\t" '   BEGIN {OFS=FS ; ind=1}
+                        {if ( $11 < 1000000 && $11 > 0 )
+                                { $12 = ind - 1 ;
+                                print }
+                         else if ( $11 > 1000000 || $11 < 0 )
+                                { $12 = ++ind - 1 ;
+                                print }
+                         else
+                                { $12 = "X" ;
+                                print }
+                         }' > file3.txt #Cojo-Summary Stats file
+
+
+#Annotating closest protein coding genes
+#----------------------------------------------------------------------
+#Software: https://bedtools.readthedocs.io/en/latest/
+
+#Id Cojo independent SNPS
+cat UKBF-EUR-Bmd-As-C-*.jma.cojo | grep -v SNP | awk '{ if ($1 == "25") {$1 = "23"}; print}' | sort -k1,1n -k3,3n | awk 'BEGIN{OFS="\t"} {print $2,$5}' > Snpids.txt
+
+#Extract from marginal GWAS
+awk 'BEGIN{FS=OFS="\t"} FNR==NR{arr[$1,$2];next} (($2,$7) in arr)' Snpids.txt "UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt | awk ' {OFS="\t" ; print "chr"$3,($4-1),$4,$1,$2,"+"}' | sed 's/chr23/chrX/g' | sed 's/chr25/chrX/g' | sort -k1,1 -k2,2n > file7.txt
+
+#Annotating closest genes
+bedtools.v2.29.2 closest -a file7.txt -b "$gdir"Ensemble.Protein.Coding.Genes.105.GRCh38.p13.Final.Ens.bed -d -t first | sort -k1,1n -k2,2n | awk -F "\t" 'BEGIN {OFS=FS ; print "SNPID","C.GENE","C.DIST"} {print $4,$12,$13}' > UKBF-EUR-Bmd-As-C-Closest-Genes.txt 
+
+#Note: Ensemble.Protein.Coding.Genes.105.GRCh38.p13.Final.Ens.bed was generated as follows - available on request:
+ 
+https://asia.ensembl.org/biomart/martview/d4aca80acae13c3b74c8cfdda4646caa
+Dataset
+Human genes (GRCh38.p13)
+Filters
+Gene type: protein_coding
+Chromosome/scaffold: 1 , 2 , 3 , 4 , 5 , 6 , 7 , 8 , 9 , 10 , 11 , 12 , 13 , 14 , 15 , 16 , 17 , 18 , 19 , 20 , 21 , 22 , MT , X , Y
+Attributes
+Gene stable ID
+Chromosome/scaffold name
+Gene start (bp)
+Gene end (bp)
+Strand
+Gene name
+
+#Export data from biomart and save as Ensemble.Protein.Coding.Genes.105.GRCh38.p13.txt
+
+sort -k2,2 -k3,3n Ensemble.Protein.Coding.Genes.105.GRCh38.p13.txt > Ensemble.Protein.Coding.Genes.105.GRCh38.p13.Final.txt
+
+#Y and MT not changed to numerical
+
+cat Ensemble.Protein.Coding.Genes.105.GRCh38.p13.Final.txt | awk 'BEGIN{OFS="\t"} { if ($5 == "1") {$5 = "+"}; print}' | awk 'BEGIN{OFS="\t"} { if ($5 == "-1") {$5 = "-"}; print}' | awk 'BEGIN{OFS="\t"} {print "chr"$2,$3,$4,$1,$6} | sort -k1,1 -k2,2n > Ensemble.Protein.Coding.Genes.105.GRCh38.p13.Final.bed
+
+#Define novel / known BMD loci  
+#----------------------------------------------------------------------
+#Download EFO:0003923 SNP Associations from NGRI GWAS Catalog (https://www.ebi.ac.uk/gwas/) and save to file using following naming convention: SearchTerm_associations_export_date.tsv
+#Note:    Experimental Factor Ontology (EFO) term EFO0003923 (bone density) has since depreciated. 
+#Manually remove associations that do not meet GWAS significance, and that were identified via interaction analyses or multi-trait analyses (e.g. MTAG) 
+
+gawk -M 'BEGIN{FS="\t"} $2 < 5E-8 {print $1}' EFO_0003923_associations_export_050324.tsv | sed 's/-/\t/g' | awk '{print $1}' | sort -u > EFO_0003923_associations_export_050324.rsid
+
+#Liftover to Hg38 with SnpTracker and dbSNP151, and convert to bed format.
+
+#Find closest known BMD associated SNP to each lead variants
+bedtools.v2.29.2 closest -a file7.txt -b EFO-0003923-050324-LiftHg38b151-Final-CGene.bed -d -t first | sort -k1,1n -k2,2n | awk -F "\t" '{OFS=FS ; print $4,$10,$13,$11}' > file9.txt
+
+#Define novel / known loci based on +/- 1mb window
+cat file9.txt | awk -F "\t" '   BEGIN {OFS=FS ; print "SNPID","T.VAR","T.DIST","T.GENE","STATUS","CODE"}
+                        {if ( $3 < 1000000 && $3 >= 0 )
+                                { $5 = "KNOWN";
+                                  $6 = 0 ;
+                                 print }
+                         else if ( $3 > 1000000 || $3 == -1 || $3 == "." )
+                                { $2 ="." ;
+                                  $3 ="." ;
+                                  $4 ="." ;
+                                  $5 = "NOVEL";
+                                  $6 = 1 ;
+                                 print }
+                         else
+                                { $2 ="X" ;
+                                  $3 ="X" ;
+                                  $4 ="X" ;
+                                  $5 = "PROB";
+                                  $6 = "X";
+                                 print }
+                         }' > UKBF-EUR-Bmd-As-C-Known-Associations.txt
+
+#Note: Code for joining annotated SNP lists, cross referencing closest genes with MGI and Nosology Dysplasia Databases and formatting into Supplementary.Table.6c.txt is available on request. 
+
+#########################################################
+#5. Manhattan plots annotated with eBMD associated SNPs 
+#########################################################
+#Format GWAS and Cojo Results 
+#-----------------------------------------------------
+#Extracting subset SNPs for plotting
+gawk -M '$13 < 5E-3 {print $2,$3,$4,$13}' UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt > Gwas.Snps.txt
+                        
+#Identifying lead snps
+awk 'NR > 1 && $18 < 6.6E-9 || $31=="NOVEL" {print $4,"leadSNP",$7,$31}' Supplementary.Table.6c.txt | awk '!visited[$3]++' > Lead.Snps.txt 
+
+#Annotate lead SNPs
+awk 'BEGIN {OFS=" " ; print "RSID","CHR","BP","P","SAMPLE","MAPPING","STATUS"} FNR==NR{a[$1]=$2 FS $3 FS $4;next}  { if ($1 in a) print $0,a[$1]; else print $0,"Original","none","NA"; }' Lead.Snps.txt Gwas.Snps.txt > ManPlot.Snps.txt
+
+#Manhattan Plot
+#-----------------------------------------------------
+#Runline: Rscript ManPlotCojo.Pub.R ManPlot.Snps.txt Manhattan.Plot.Snp 
+
+#ManPlotCojo.Pub.R Code adapted from https://danielroelfs.com/
+
+# Set Environment:
+setwd("./") # [EDIT]
+#----------------------------------------------------------
+#Load packages
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(Rmpfr)
+options(ggrepel.max.overlaps = Inf)
+
+
+#Setting Flags: 
+#----------------------------------------------------------
+input=commandArgs(trailingOnly=T)[1]
+output=commandArgs(trailingOnly=T)[2]
+
+# Import sumstats
+GWAS = data.frame(fread(input, sep=' ', header=T, colClasses=c(P="character"), na.strings="NA", stringsAsFactors=FALSE))
+
+# Double precision for p-values, and convert to -log10(P)
+.N <- function(.) mpfr(., precBits = 200)
+GWAS$LP <- asNumeric(-log10(.N(GWAS$P)))
+
+# sort by chromosome
+unique(GWAS$CHR)
+idx = sort(GWAS$CHR, index.return = T)$ix
+GWAS = GWAS[idx,]
+
+# get cumulative base pair positions and center positions
+# thanks to Dani▒l Roelfs for his helpful blog post (http://www.danielroelfs.com/coding/manhattan_plots/)
+nCHR = length(unique(GWAS$CHR))
+GWAS$BPcum = NA
+s = 0
+nbp = c()
+for (i in unique(GWAS$CHR)){
+  nbp[i] = max(GWAS[GWAS$CHR == i,]$BP)
+  GWAS[GWAS$CHR == i,"BPcum"] = GWAS[GWAS$CHR == i,"BP"] + s
+  s = s + nbp[i]
+}
+
+axis.set = GWAS %>%
+  group_by(CHR) %>%
+  summarize(center = (max(BPcum) + min(BPcum)) / 2)
+
+# set ylim, significance threshold, and threshold for labels
+sig = 6.6E-9                    
+sig_label = 8.18045606446  #Equivalent to -log10(6.6E-9)
+#ylim = max(GWAS$LP)*1.10
+ylim  = 600 # Set threshold due to outliers around WNT16-CPED1 Locus on Chr 7 with p < E-2000
+
+# create manhattan plot 
+set.seed(8245)
+manhplot = ggplot(data = GWAS) + #ggplot
+  geom_point(aes(x=BPcum, y=LP, color=as.factor(CHR)), alpha = 0.6, size = 2.5, stroke = 0, shape = 16) +
+  scale_color_manual(values = rep(c("#6eca76", "#6e90ca"), nCHR)) +
+  scale_x_continuous(expand = c(0.03,0), label = axis.set$CHR, breaks = axis.set$center) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,ylim), breaks = seq(0,ylim,100)) + #limits = c(0,ylim)
+  geom_hline(yintercept = -log10(sig), color = "black", linetype = "dashed", size = 0.25) +
+  labs(x = "Chromosome", y = expression("-log"[10]*"("*italic(p)*")")) +
+  geom_segment(aes(x=min(axis.set$center),xend=max(axis.set$center),y=-Inf,yend=-Inf), colour = "grey70", size = 0.25)+
+  geom_segment(aes(y=0,yend=ylim,x=-Inf,xend=-Inf), colour = "grey70", size = 0.25) +
+  #Labelling novel loci
+  geom_point(data=subset(GWAS, SAMPLE=="leadSNP" & STATUS=="NOVEL"), aes(x=BPcum, y=LP), fill="yellow", color="black", shape=21, size=2.5) +
+  #Labelling cojo lead variants
+  geom_text_repel(
+    data          = subset(GWAS, SAMPLE=="leadSNP" & STATUS=="NOVEL"),
+    aes(x=BPcum, y=LP, label=MAPPING), fontface = "italic",
+    size          = 4,
+    segment.size  = 0.1,
+    min.segment.length = unit(0.02,"lines"),
+    segment.color = "black",
+    point.padding = unit(0, "lines"),
+    direction     = "both",
+    box.padding = 0.5,
+    inherit.aes=FALSE,
+    max.overlaps = Inf
+  ) +
+  theme_light(base_size = 12) +
+  theme(
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    axis.ticks.length=unit(.5, "cm"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    axis.text.x = element_text(angle = 0, size = 8, vjust = 0.25, margin = margin(t = 3, r = 0, b = 0, l = 0)),
+    axis.text.y = element_text(angle = 0, size = 8, vjust = 0.25, margin = margin(t = 0, r = 3, b = 0, l = 0)),
+    axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 5)),
+    axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
+    plot.margin=unit(c(1.5,0.75,0.5,0),"cm")
+  )
+
+# draw manhattan plot
+ggsave(file=paste(output,"png",sep="."), manhplot, width = 34, height = 15, unit="cm", dpi = 300)
+
+#########################################################
+# 6. Linkage disequilibrium score regression
+#########################################################
+
+#Software: https://github.com/bulik/ldsc
+
+#Extracting Summary Stats from Hg19 Sumstats (Before liftover - see #2)
+#----------------------------------------------------------
+#Removing MHC
+#Use p-value from non-infinitesimal model and run sensitivity analyses using other p-values. 
+#Retaining as many small p-value SNPs as LDSC will accept (LDSC does not handle small p-values well)
+
+awk 'BEGIN {OFS=FS ; print "RSID","CHR","BP","A1","A2","MAF","INFO","BETA","SE","P","N"} ; {if ( NR > 1 && $7 <= 0.5) print $2,$3,$4,$5,$6,$7,$8,$9,$10,$13,$14 ; else if (NR > 1 && $7 > 0.5) print $2,$3,$4,$6,$5,(1-$7),$8,(-1*$9),$10,$13,$14}' UKBF-EUR-Bmd-As-C-BoltLmm-SumStats-Final.txt  | gawk -M 'NR == 1 || $10 > 1E-1000 && $10 <= 1 {print}' | awk '{if ( $2 !=6 ) print ; else if ($2 == 6 && ($3 < 28477797 || $3 > 33448354)) print}' > EUR-Bmd-As-C-PNI.rsid
+
+#Formatting Sumstats
+#----------------------------------------------------------
+source activate ldsc
+
+munge_sumstats.py \
+        --info-min 0.9 \
+        --maf-min 0.0005 \
+        --sumstats EUR-Bmd-As-C-PNI.rsid \
+        --out EUR-Bmd-As-C-Ldsc-PNI
+
+#Running Lsdc
+#----------------------------------------------------------
+#Do not filter our snps with small p-values by setting --chisq-max to large number. 
+#Using files supplied with software
+
+ldsc.py \
+        --ref-ld-chr  /LdScore/baseline_v1.1/baseline. \
+        --w-ld-chr    /LdScore/1000G_Phase3_weights_hm3_no_MHC/weights.hm3_noMHC. \
+        --overlap-annot \
+        --frqfile-chr /LdScore/1000G.EUR.QC. \
+        --h2 EUR-Bmd-As-C-Ldsc-PNI.sumstats.gz \
+        --chisq-max 5000.0 \
+        --out EUR-Bmd-As-C-Ldsc-PNI
+
+source deactivate ldsc
+
+#########################################################
+# 7. Identifying High Moderate and Low Impact Mutations
+#########################################################
+
+#Software: https://pcingola.github.io/SnpEff/
+
+#Create dummy vcf formatted file 
+#----------------------------------------------------------                            
+awk 'BEGIN {OFS="\t"} ($3 == 23) {$3 = "X"} 1' UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt  | awk 'BEGIN {OFS="\t" ; print "#CHROM","POS","ID","REF","ALT","QUAL","FILTER","INFO"} NR > 1 && $3 !=25 {print $3,$4,$2,$5,$6,"NA","PASS","SNPID="$1";AF="$7";INFO="$8";BETA="$9";SE="$10";P="$11";P.I="$12";P.NI="$13";N="$14}' > UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.vcf
+
+#Run SnpEff Annotation
+#----------------------------------------------------------
+java -Xmx72g -jar snpEff.jar GRCh38.p14 -v UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.vcf > UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.ann
+
+#Extract first annotation for each SNP
+#----------------------------------------------------------
+cat UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.ann | sed -e 's/|/\t/g' -e 's/;/\t/g' -e 's/=/\t/g' | awk -F "\t" 'BEGIN {OFS=FS ; print "#CHROM","BEGIN","END","MARKER_ID","RSID","EA","NEA","EAF","INFO","BETA","SE","PVALUE","N","IMPACT"} NR > 15 {print $1,$2,$2,$1":"$2"_"$4"/"$5"_"$28":"$30,$3,$4,$5,$11,$13,$15,$17,$23,$25,$29}' > UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats-Epacts-22072021.txt
+
+#All high impact variants were manually checked for consistency using Variant effect predictor implemented in Biomart.
+
+# Software: https://asia.ensembl.org/info/docs/tools/vep/index.html
+
+#########################################################
+# 8. Gene-based tests of association
+#########################################################
+
+#Software: https://cncr.nl/research/magma/
+
+#Format and Qc GWAS Sumstats 
+#----------------------------------------------------------------------
+awk -v chr=1 'BEGIN{print "SNP","CHR","BP","P","NOBS"} $3 == chr && $8 > 0.6 && $7 > 0.0005 && $7 < 0.9995 {print $2,$3,$4,$13,$14}' UKBF-EUR-Bmd-As-C-Hg38dbSnp151-Sumstats.txt > EUR-Bmd-As-C-Magma-SumStats-Chr1.txt
+
+#Annotate Snps to Genes
+#----------------------------------------------------------------------
+magma.1.10 \
+--annotate window=2,1 \
+--snp-loc  UKBF-EUR-LdRefRsid-Hg38dbSnp151-Chr1.bim \
+--gene-loc Ensemble.Protein.Coding.Genes.105.GRCh38.p13.Final.txt \
+--out UKBF-EUR-LdRefRsid-Chr1-2u1dkb
+
+#Run Gene-based Tests
+#----------------------------------------------------------------------
+magma.1.10 \
+        --bfile UKBF-EUR-LdRefRsid-Hg38dbSnp151-Chr1 \
+        --pval EUR-Bmd-As-C-Magma-SumStats-Chr1.txt ncol=NOBS \
+        --gene-annot UKBF-EUR-LdRefRsid-Chr1-2u1dkb.genes.annot \
+        --gene-settings snp-min-maf=0.0005 \
+        --gene-model multi \
+        --big-data \
+        --out Magma-EUR-Bmd-As-C-Chr1-2u1dkb
+
+#Note: 
+#UKBF-EUR-LdRefRsid-Hg38dbSnp151-Chr1 corresponds to the LD reference for 50000 randomly selected unrelated European ancestry individuals - code to generate this dataset is available upon request by approved UK-Biobank Researchers   
+#Code was repurposed for analyses of remaining chromosomes - 2 to 23 (X)
+
+#Concatenate results for chromosome 1 - 23
+#----------------------------------------------------------------------
+#Rename file names to work with --merge function
+                                            
+cp Magma-EUR-Bmd-As-C-Chr1-2u1dkb.genes.raw Magma-EUR-Bmd-As-C-Chr1-2u1dkb.batch1_chr.genes.raw
+cp Magma-EUR-Bmd-As-C-Chr1-2u1dkb.genes.out Magma-EUR-Bmd-As-C-Chr1-2u1dkb.batch1_chr.genes.out
+
+#Rename results for other chromosomes.
+
+magma.1.10 --merge Magma-EUR-Bmd-As-C-Chr1-2u1dkb --out Magma-EUR-Bmd-As-C-Chr1-2u1dkb-All
+
+#Cross reference ENSEMBLE.ID with gene symbols from Biomart file which is available upon request. 
+
+#########################################################
+# 9. Manhattan plots annotated with rare skeletal disease genes 
+#########################################################
+
+#Cross reference ENSEMBLE.ID with monogenic skeletal disease genes which is available upon request. 
+
+#Runline: Rscript ManPlotMagma.Pub.R ManPlot.Genes.txt Manhattan.Plot.Gene 
+
+#ManPlotMagma.Pub.R Code adapted from https://danielroelfs.com/
+
+# Set Environment:
+setwd("./") # [EDIT]
+#----------------------------------------------------------
+rm(list=ls())
+# load packages
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(Rmpfr)
+
+#Setting Flags: 
+#----------------------------------------------------------
+input=commandArgs(trailingOnly=T)[1]
+output=commandArgs(trailingOnly=T)[2]
+
+# Import sumstats
+GWAS = data.frame(fread(input, sep='\t', header=T, colClasses=c(P_MULTI="character"), na.strings="NA", stringsAsFactors=FALSE))
+head(GWAS)
+# Double precision for p-values, and convert to -log10(P)
+.N <- function(.) mpfr(., precBits = 200)
+GWAS$LP <- asNumeric(-log10(.N(GWAS$P_MULTI)))
+
+# sort by chromosome
+unique(GWAS$CHR)
+idx = sort(GWAS$CHR, index.return = T)$ix
+GWAS = GWAS[idx,]
+
+# get cumulative base pair positions and center positions
+# thanks to Dani▒l Roelfs for his helpful blog post (http://www.danielroelfs.com/coding/manhattan_plots/)
+nCHR = length(unique(GWAS$CHR))
+GWAS$BPcum = NA
+s = 0
+nbp = c()
+for (i in unique(GWAS$CHR)){
+  nbp[i] = max(GWAS[GWAS$CHR == i,]$START)
+  GWAS[GWAS$CHR == i,"BPcum"] = GWAS[GWAS$CHR == i,"START"] + s
+  s = s + nbp[i]
+}
+
+axis.set = GWAS %>%
+  group_by(CHR) %>%
+  summarize(center = (max(BPcum) + min(BPcum)) / 2)
+
+# set ylim, significance threshold, and threshold for labels
+sig = 2.538715410002539e-6                      
+sig_label = 5.59538598081  Equivalent to -log10(2.54E-6)
+ylim = max(GWAS$LP)*1.05
+
+# create manhattan plot #282873
+set.seed(8245)
+manhplot = ggplot(data = GWAS) + #ggplot
+  geom_point(aes(x=BPcum, y=LP, color=as.factor(CHR)), alpha = 0.6, size = 1.5, stroke = 0, shape = 16) +
+  scale_color_manual(values = rep(c("#6eca76", "#6e90ca"), nCHR)) +
+  scale_x_continuous(expand = c(0.03,0), label = axis.set$CHR, breaks = axis.set$center) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,ylim), breaks = seq(0,ylim,10)) + #limits = c(0,ylim)
+  #geom_hline(yintercept = -log10(sig), color = "black", linetype = "dashed", linewidth = 0.1) +
+  labs(x = "", y = "") +
+  geom_segment(aes(x=min(axis.set$center),xend=max(axis.set$center),y=-Inf,yend=-Inf), colour = "grey70", linewidth = 0.25)+
+  geom_segment(aes(y=0,yend=ylim,x=-Inf,xend=-Inf), colour = "grey70", linewidth = 0.25) +
+  #Labelling novel loci
+  geom_point(data=subset(GWAS, NOSOLOGY==1 & GWAS$LP > sig_label), aes(x=BPcum, y=LP), fill="orange", color="black", shape=21, size=1.5) +
+  #Labelling cojo lead variants
+  geom_text_repel(
+    data          = subset(GWAS, NOSOLOGY==1 & GWAS$LP > sig_label),
+    aes(x=BPcum, y=LP, label=GENE.SYMBOL), fontface = "italic",
+    size          = 2,
+    segment.size  = 0.1,
+    #min.segment.length = unit(0.02,"lines"),
+    segment.color = "black",
+    #point.padding = unit(0, "lines"),
+    direction     = "both",
+    #box.padding = 1,
+    inherit.aes=FALSE,
+    max.overlaps = Inf
+  ) +
+  theme_light(base_size = 6) +
+  theme(
+    legend.position = "none",
+    panel.border = element_blank(),
+    axis.line = element_blank(),
+    axis.ticks.length=unit(.1, "cm"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    #axis.text.x = element_text(angle = 0, vjust = 0.25, margin = margin(t = 3, r = 0, b = 0, l = 0)),
+    #axis.text.y = element_text(angle = 0, vjust = 0.25, margin = margin(t = 0, r = 3, b = 0, l = 0)),
+    #axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 5)),
+    #axis.title.x = element_text(margin = margin(t = 10, r = 0, b = 0, l = 0)),
+    #plot.margin=unit(c(1.5,0.75,0.5,0),"cm")
+  )
+
+# draw manhattan plot
+ggsave(file=paste(output,"png",sep="."), manhplot, width = 17.9, height = 6.3, unit="cm", dpi = 300)
+
+#########################################################
+# 10. Competitive gene set analyses and posthoc qc 
+#########################################################
+
+#Marginal gene set analyses
+#----------------------------------------------------------------------
+#Use Seurat 'FindAllMarkers' function to generate gene set for each cell cluster, and map to human ensemble IDs (e.g. cluster_0.csv) 
+
+#Format gene set  
+sed 's/"//g' cluster_0.csv | awk -v var="GLOBAL.0" 'BEGIN{FS="," ; OFS="\t"} NR > 1 {print var,$4}' | sort -u > GLOBAL.0.gset 
+
+#Run GSA
+magma.1.10 \
+        --gene-results Magma-EUR-Bmd-As-C-2u1dkb-All.genes.raw \
+        --set-annot GLOBAL.0.gset col=2,1 \
+        --model direction=greater \
+        --out UKBF-EUR-Bmd-As-C-Global.0-2u1dkb-Gsa-Base
+
+#Posthoc qc analysis (R script available https://vu.data.surf.nl/s/VMl2aX9vR7hQpe9?openfile=true)
+#----------------------------------------------------------------------
+R CMD posthoc_qc_107a.r
+
+B.set = load.data("UKBF-EUR-Bmd-As-C-Global.0-2u1dkb-Gsa-Base")
+show.info(B.set)
+plot.sets(B.set,"UKBF-EUR-Bmd-As-C-Global.0-2u1dkb-Gsa-Base")
+
+#Code was repurposed for analyses of remaining cell clusters and sub-clusters and reformatted for plotting
+
+#Example code to generate bar plots 
+#----------------------------------------------------------------------
+setwd("./")
+cbbPalette <- c("#56B4E9", "#009E73", "#CC79A7")
+
+library(data.table)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(cowplot)
+
+data <- read.csv("Gsa.Results.csv")
+data$P.VALUE <- -log10(data$GSA.P.VALUE)
+
+data_long <- melt(data, id.vars = "CELL.TYPE", variable.name = "Condition", value.name = "NegLogP_Value")
+data$ColorQ <- ifelse(data$P.VALUE < -log10(0.05), "grey",ifelse(data$P.VALUE > -log10(0.0015), "#56B4E9", "black"))
+
+eBMD <- ggplot(data, aes(x = P.VALUE, y = CELL.TYPE, fill = ColorQ)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+  scale_fill_manual(values = c("grey" = "grey", "black" = "black", "#56B4E9" = "#56B4E9")) +
+  geom_vline(xintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  theme(axis.text.y = element_text(angle = 0, hjust = 1)) +
+  labs(x = "-log10(P Value)", y = "Cell Type") +
+  theme(legend.position = "none") +
+  scale_x_continuous(limits = c(0, 13))
+
+save_plot("Garvan.eBMD.Barplot.global.png",eBMD,base_width = 7, base_height=7, dpi=300) 
+
+#Sensitivity analyses conditioning on mouse - human orthologs 
+#----------------------------------------------------------------------
+sed 's/"//g' 01_all_mouse_prot_genes_human_ortho_ensembl_105.csv | awk -v var="ORTH" 'BEGIN{FS="," ; OFS="\t"} NR > 1 {print var,$7}' | sort -u > GLOBAL.0.orth
+
+cat GLOBAL.0.gset GLOBAL.0.orth > GLOBAL.0.gset.orth
+
+magma.1.10 \
+        --gene-results Magma-EUR-Bmd-As-C-2u1dkb-All.genes.raw \
+        --set-annot GLOBAL.0.gset.orth col=2,1 \
+        --model condition=ORTH direction=greater \
+        --out UKBF-EUR-Bmd-As-C-Global.0-2u1dkb-Gsa-Full
+
+#Sensitivity analyses conditioning on other enriched cell clusters
+#----------------------------------------------------------------------
+cat GLOBAL.27.gset GLOBAL.28.gset > GLOBAL.27.C.28.gset
+
+magma.1.10 \
+        --gene-results Magma-EUR-Bmd-As-C-2u1dkb-All.genes.raw \
+        --set-annot GLOBAL.27.C.28.gset col=2,1 \
+        --model condition=GLOBAL.28 direction=greater \
+        --out UKBF-EUR-Bmd-As-C-Global.27-Cond.Global.28.2u1dkb-Gsa-Base
+
+#########################################################
+######################################################### 
+#########################################################

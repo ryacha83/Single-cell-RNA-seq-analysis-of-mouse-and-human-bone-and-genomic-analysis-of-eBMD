@@ -1,0 +1,66 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-11-19"
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2) 
+library(ggrepel)
+
+########## Label transfer of mouse to human dataset ##################
+
+#Reference dataset mouse global original, humanised by Alex
+load("/g/data/bd20/Ryan/Misc/Label_transfer_object/human_whole_bone_seurat.Robj")
+
+#query dataset human Seurat object
+load("/g/data/bd20/Ryan/Relation/031_RRx_OA_only_for_NatGenet/Analysis_13a_OA_cleanest_harmony_multiplet_removed_20250507/RRx_011_to_034_OA_only_cleanest_log_norm_harmony_post_UMAP_annotated_colour_20250512.Robj")
+
+# Convert the metadata column to a factor
+RRx_OA_merged_cleanest$Cluster_annotation <- as.factor(RRx_OA_merged_cleanest$Cluster_annotation)
+
+#Assin merged_clusters as the active ident
+Idents(RRx_OA_merged_cleanest) <- "Cluster_annotation"
+
+#change default assay to RNA
+DefaultAssay(human_whole_bone_seurat) <- 'RNA'
+DefaultAssay(RRx_OA_merged_cleanest) <- 'RNA'
+
+#identify common variable features between ref and query
+var_features_common <- SelectIntegrationFeatures(object.list = list(human_whole_bone_seurat, RRx_OA_merged_cleanest), nfeatures = 3000)
+
+trans.anchors.vargenes <- FindTransferAnchors(reference = human_whole_bone_seurat, query = RRx_OA_merged_cleanest, reference.assay = 'RNA', query.assay = 'RNA', project.query = T, dims = 1:20, features = var_features_common) 
+
+predictions <- TransferData(anchorset = trans.anchors.vargenes, refdata = human_whole_bone_seurat$res.1, dims = 1:20)
+
+#add to meta data to query
+RRx_OA_merged_cleanest <- AddMetaData(RRx_OA_merged_cleanest, metadata = predictions)
+
+###### Plot using prediction score matrix ########
+
+# Extract prediction scores (all columns containing "prediction" in metadata)
+prediction_columns <- grep("prediction", colnames(RRx_OA_merged_cleanest_diet@meta.data), value = TRUE)
+
+prediction_scores <- RRx_OA_merged_cleanest_diet@meta.data[, prediction_columns]
+
+# Extract cluster identities
+
+Idents(RRx_OA_merged_cleanest_diet) <- "Cluster_annotation"
+
+
+# Convert prediction scores to dataframe and add cluster identity
+prediction_df <- as.data.frame(prediction_scores)
+prediction_df$Cluster <- RRx_OA_merged_cleanest_diet$Cluster_annotation
+
+# Compute mean prediction scores per cluster
+avg_prediction_scores <- prediction_df %>%
+  group_by(Cluster) %>%
+  summarise(across(everything(), mean)) %>%
+  column_to_rownames(var = "Cluster")  # Set cluster names as row names
+
+
+
+
+```
+

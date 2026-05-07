@@ -1,0 +1,405 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-11-18"
+---
+
+```{r setup, include=FALSE}
+# Read in gene matrices from 10X output using Seurat package.
+# Multiple samples were were captured from each patient (FH = femoral head, FN = femoral neck)
+# Each sample was digested with either the Garvan method using collagenase A + dispase, or the Relation method using collagenase IV + dispase.
+# Patient 22 and 24 CD45neg ALPL_low and ALPL_high and ALPL_neg cells were captured
+# Patient 22 and 24 normal and diseased region (osteoarthritis) of femoral head were captured
+# Patient 26 cortical bone was included in the processing of femoral neck samples
+# Combine, QC, assign clusters, find markers and save object.
+# Note: due to the amount of data, analysis was run on a High Performance Computer (HPC)
+
+#Load libraries
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(cowplot)
+library(ggplot2)
+library(plyr)
+
+# Load the raw dataset for Patient_011_FH_G
+Patient_011_FH_G.data <- Read10X(data.dir = "file_location")
+Patient_011_FH_G <- CreateSeuratObject(counts = Patient_011_FH_G.data, min.cells = 1, min.features = 100)
+Patient_011_FH_G <- AddMetaData(Patient_011_FH_G, metadata="Patient_011", col.name="Patient")
+Patient_011_FH_G <- AddMetaData(Patient_011_FH_G, metadata="Female", col.name="Gender")
+Patient_011_FH_G <- AddMetaData(Patient_011_FH_G, metadata="FH", col.name="Site")
+Patient_011_FH_G <- AddMetaData(Patient_011_FH_G, metadata="Garvan", col.name="Digestion")
+Patient_011_FH_G <- RenameCells(object = Patient_011_FH_G, add.cell.id = "Patient_011_FH_G")
+
+# Load the raw dataset for Patient_011_FH_R
+Patient_011_FH_R.data <- Read10X(data.dir = "file_location")
+Patient_011_FH_R <- CreateSeuratObject(counts = Patient_011_FH_R.data, min.cells = 1, min.features = 100)
+Patient_011_FH_R <- AddMetaData(Patient_011_FH_R, metadata="Patient_011", col.name="Patient")
+Patient_011_FH_R <- AddMetaData(Patient_011_FH_R, metadata="Female", col.name="Gender")
+Patient_011_FH_R <- AddMetaData(Patient_011_FH_R, metadata="FH", col.name="Site")
+Patient_011_FH_R <- AddMetaData(Patient_011_FH_R, metadata="Relation", col.name="Digestion")
+Patient_011_FH_R <- RenameCells(object = Patient_011_FH_R, add.cell.id = "Patient_011_FH_R")
+
+# Load the raw dataset for Patient_011_FN_G
+Patient_011_FN_G.data <- Read10X(data.dir = "file_location")
+Patient_011_FN_G <- CreateSeuratObject(counts = Patient_011_FN_G.data, min.cells = 1, min.features = 100)
+Patient_011_FN_G <- AddMetaData(Patient_011_FN_G, metadata="Patient_011", col.name="Patient")
+Patient_011_FN_G <- AddMetaData(Patient_011_FN_G, metadata="Female", col.name="Gender")
+Patient_011_FN_G <- AddMetaData(Patient_011_FN_G, metadata="FN", col.name="Site")
+Patient_011_FN_G <- AddMetaData(Patient_011_FN_G, metadata="Garvan", col.name="Digestion")
+Patient_011_FN_G <- RenameCells(object = Patient_011_FN_G, add.cell.id = "Patient_011_FN_G")
+
+# Load the raw dataset for Patient_011_FN_R
+Patient_011_FN_R.data <- Read10X(data.dir = "file_location")
+Patient_011_FN_R <- CreateSeuratObject(counts = Patient_011_FN_R.data, min.cells = 1, min.features = 100)
+Patient_011_FN_R <- AddMetaData(Patient_011_FN_R, metadata="Patient_011", col.name="Patient")
+Patient_011_FN_R <- AddMetaData(Patient_011_FN_R, metadata="Female", col.name="Gender")
+Patient_011_FN_R <- AddMetaData(Patient_011_FN_R, metadata="FN", col.name="Site")
+Patient_011_FN_R <- AddMetaData(Patient_011_FN_R, metadata="Relation", col.name="Digestion")
+Patient_011_FN_R <- RenameCells(object = Patient_011_FN_R, add.cell.id = "Patient_011_FN_R")
+
+#Merge all samples for pateint Patient_011
+Patient_011_merged <- merge(Patient_011_FH_G, y = c(Patient_011_FH_R, Patient_011_FN_G, Patient_011_FN_R))
+
+# Load the raw dataset for Patient_012_FH_G
+Patient_012_FH_G.data <- Read10X(data.dir = "file_location")
+Patient_012_FH_G <- CreateSeuratObject(counts = Patient_012_FH_G.data, min.cells = 1, min.features = 100)
+Patient_012_FH_G <- AddMetaData(Patient_012_FH_G, metadata="Patient_012", col.name="Patient")
+Patient_012_FH_G <- AddMetaData(Patient_012_FH_G, metadata="Male", col.name="Gender")
+Patient_012_FH_G <- AddMetaData(Patient_012_FH_G, metadata="FH", col.name="Site")
+Patient_012_FH_G <- AddMetaData(Patient_012_FH_G, metadata="Garvan", col.name="Digestion")
+Patient_012_FH_G <- RenameCells(object = Patient_012_FH_G, add.cell.id = "Patient_012_FH_G")
+
+# Load the raw dataset for Patient_012_FH_R
+Patient_012_FH_R.data <- Read10X(data.dir = "file_location")
+Patient_012_FH_R <- CreateSeuratObject(counts = Patient_012_FH_R.data, min.cells = 1, min.features = 100)
+Patient_012_FH_R <- AddMetaData(Patient_012_FH_R, metadata="Patient_012", col.name="Patient")
+Patient_012_FH_R <- AddMetaData(Patient_012_FH_R, metadata="Male", col.name="Gender")
+Patient_012_FH_R <- AddMetaData(Patient_012_FH_R, metadata="FH", col.name="Site")
+Patient_012_FH_R <- AddMetaData(Patient_012_FH_R, metadata="Relation", col.name="Digestion")
+Patient_012_FH_R <- RenameCells(object = Patient_012_FH_R, add.cell.id = "Patient_012_FH_R")
+
+# Load the raw dataset for Patient_012_FN_G
+Patient_012_FN_G.data <- Read10X(data.dir = "file_location")
+Patient_012_FN_G <- CreateSeuratObject(counts = Patient_012_FN_G.data, min.cells = 1, min.features = 100)
+Patient_012_FN_G <- AddMetaData(Patient_012_FN_G, metadata="Patient_012", col.name="Patient")
+Patient_012_FN_G <- AddMetaData(Patient_012_FN_G, metadata="Male", col.name="Gender")
+Patient_012_FN_G <- AddMetaData(Patient_012_FN_G, metadata="FN", col.name="Site")
+Patient_012_FN_G <- AddMetaData(Patient_012_FN_G, metadata="Garvan", col.name="Digestion")
+Patient_012_FN_G <- RenameCells(object = Patient_012_FN_G, add.cell.id = "Patient_012_FN_G")
+
+# Load the raw dataset for Patient_012_FN_R
+Patient_012_FN_R.data <- Read10X(data.dir = "file_location")
+Patient_012_FN_R <- CreateSeuratObject(counts = Patient_012_FN_R.data, min.cells = 1, min.features = 100)
+Patient_012_FN_R <- AddMetaData(Patient_012_FN_R, metadata="Patient_012", col.name="Patient")
+Patient_012_FN_R <- AddMetaData(Patient_012_FN_R, metadata="Male", col.name="Gender")
+Patient_012_FN_R <- AddMetaData(Patient_012_FN_R, metadata="FN", col.name="Site")
+Patient_012_FN_R <- AddMetaData(Patient_012_FN_R, metadata="Relation", col.name="Digestion")
+Patient_012_FN_R <- RenameCells(object = Patient_012_FN_R, add.cell.id = "Patient_012_FN_R")
+
+#Merge 
+Patient_012_merged <- merge(Patient_012_FH_G, y = c(Patient_012_FH_R, Patient_012_FN_G, Patient_012_FN_R))
+
+# Load the raw dataset for Patient_014_FH_G
+Patient_014_FH_G.data <- Read10X(data.dir = "file_location")
+Patient_014_FH_G <- CreateSeuratObject(counts = Patient_014_FH_G.data, min.cells = 1, min.features = 100)
+Patient_014_FH_G <- AddMetaData(Patient_014_FH_G, metadata="Patient_014", col.name="Patient")
+Patient_014_FH_G <- AddMetaData(Patient_014_FH_G, metadata="Male", col.name="Gender")
+Patient_014_FH_G <- AddMetaData(Patient_014_FH_G, metadata="FH", col.name="Site")
+Patient_014_FH_G <- AddMetaData(Patient_014_FH_G, metadata="Garvan", col.name="Digestion")
+Patient_014_FH_G <- RenameCells(object = Patient_014_FH_G, add.cell.id = "Patient_014_FH_G")
+
+# Load the raw dataset for Patient_014_FH_R
+Patient_014_FH_R.data <- Read10X(data.dir = "file_location")
+Patient_014_FH_R <- CreateSeuratObject(counts = Patient_014_FH_R.data, min.cells = 1, min.features = 100)
+Patient_014_FH_R <- AddMetaData(Patient_014_FH_R, metadata="Patient_014", col.name="Patient")
+Patient_014_FH_R <- AddMetaData(Patient_014_FH_R, metadata="Male", col.name="Gender")
+Patient_014_FH_R <- AddMetaData(Patient_014_FH_R, metadata="FH", col.name="Site")
+Patient_014_FH_R <- AddMetaData(Patient_014_FH_R, metadata="Relation", col.name="Digestion")
+Patient_014_FH_R <- RenameCells(object = Patient_014_FH_R, add.cell.id = "Patient_014_FH_R")
+
+# Load the raw dataset for Patient_014_FN_G
+Patient_014_FN_G.data <- Read10X(data.dir = "file_location")
+Patient_014_FN_G <- CreateSeuratObject(counts = Patient_014_FN_G.data, min.cells = 1, min.features = 100)
+Patient_014_FN_G <- AddMetaData(Patient_014_FN_G, metadata="Patient_014", col.name="Patient")
+Patient_014_FN_G <- AddMetaData(Patient_014_FN_G, metadata="Male", col.name="Gender")
+Patient_014_FN_G <- AddMetaData(Patient_014_FN_G, metadata="FN", col.name="Site")
+Patient_014_FN_G <- AddMetaData(Patient_014_FN_G, metadata="Garvan", col.name="Digestion")
+Patient_014_FN_G <- RenameCells(object = Patient_014_FN_G, add.cell.id = "Patient_014_FN_G")
+
+# Load the raw dataset for Patient_014_FN_R
+Patient_014_FN_R.data <- Read10X(data.dir = "file_location")
+Patient_014_FN_R <- CreateSeuratObject(counts = Patient_014_FN_R.data, min.cells = 1, min.features = 100)
+Patient_014_FN_R <- AddMetaData(Patient_014_FN_R, metadata="Patient_014", col.name="Patient")
+Patient_014_FN_R <- AddMetaData(Patient_014_FN_R, metadata="Male", col.name="Gender")
+Patient_014_FN_R <- AddMetaData(Patient_014_FN_R, metadata="FN", col.name="Site")
+Patient_014_FN_R <- AddMetaData(Patient_014_FN_R, metadata="Relation", col.name="Digestion")
+Patient_014_FN_R <- RenameCells(object = Patient_014_FN_R, add.cell.id = "Patient_014_FN_R")
+
+#Merge 
+Patient_014_merged <- merge(Patient_014_FH_G, y = c(Patient_014_FH_R, Patient_014_FN_G, Patient_014_FN_R))
+
+# Load the raw dataset for Patient_020
+Patient_020_FNG.data <- Read10X(data.dir = "file_location")
+Patient_020_FNG <- CreateSeuratObject(counts = Patient_020_FNG.data, min.cells = 1, min.features = 100)
+Patient_020_FNG <- AddMetaData(Patient_020_FNG, metadata="Patient_020", col.name="Patient")
+Patient_020_FNG <- AddMetaData(Patient_020_FNG, metadata="Female", col.name="Gender")
+Patient_020_FNG <- AddMetaData(Patient_020_FNG, metadata="FN", col.name="Site")
+Patient_020_FNG <- AddMetaData(Patient_020_FNG, metadata="Garvan", col.name="Digestion")
+Patient_020_FNG <- RenameCells(object = Patient_020_FNG, add.cell.id = "Patient_020_FNG")
+
+Patient_020_FNR.data <- Read10X(data.dir = "file_location")
+Patient_020_FNR <- CreateSeuratObject(counts = Patient_020_FNR.data, min.cells = 1, min.features = 100)
+Patient_020_FNR <- AddMetaData(Patient_020_FNR, metadata="Patient_020", col.name="Patient")
+Patient_020_FNR <- AddMetaData(Patient_020_FNR, metadata="Female", col.name="Gender")
+Patient_020_FNR <- AddMetaData(Patient_020_FNR, metadata="FN", col.name="Site")
+Patient_020_FNR <- RenameCells(object = Patient_020_FNR, add.cell.id = "Patient_020_FNR")
+
+#Merge 
+Patient_020_merged <- merge(Patient_020_FNG, y = c(Patient_020_FNR))
+
+# Load the raw dataset for Patient_022_FNG_ALPLlo
+Patient_022_ALPLlo.data <- Read10X(data.dir = "file_location")
+Patient_022_ALPLlo <- CreateSeuratObject(counts = Patient_022_ALPLlo.data, min.cells = 1, min.features = 100)
+Patient_022_ALPLlo <- AddMetaData(Patient_022_ALPLlo, metadata="Patient_022", col.name="Patient")
+Patient_022_ALPLlo <- AddMetaData(Patient_022_ALPLlo, metadata="Female", col.name="Gender")
+Patient_022_ALPLlo <- AddMetaData(Patient_022_ALPLlo, metadata="FN", col.name="Site")
+Patient_022_ALPLlo <- AddMetaData(Patient_022_ALPLlo, metadata="Garvan", col.name="Digestion")
+Patient_022_ALPLlo <- AddMetaData(Patient_022_ALPLlo, metadata="ALPL_lo", col.name="ALPL")
+Patient_022_ALPLlo <- RenameCells(object = Patient_022_ALPLlo, add.cell.id = "Patient_022_ALPLlo")
+
+# Load the raw dataset for Patient_022_FNG_ALPLhi
+Patient_022_ALPLhi.data <- Read10X(data.dir = "file_location")
+Patient_022_ALPLhi <- CreateSeuratObject(counts = Patient_022_ALPLhi.data, min.cells = 1, min.features = 100)
+Patient_022_ALPLhi <- AddMetaData(Patient_022_ALPLhi, metadata="Patient_022", col.name="Patient")
+Patient_022_ALPLhi <- AddMetaData(Patient_022_ALPLhi, metadata="Female", col.name="Gender")
+Patient_022_ALPLhi <- AddMetaData(Patient_022_ALPLhi, metadata="FN", col.name="Site")
+Patient_022_ALPLhi <- AddMetaData(Patient_022_ALPLhi, metadata="Garvan", col.name="Digestion")
+Patient_022_ALPLhi <- AddMetaData(Patient_022_ALPLhi, metadata="ALPL_hi", col.name="ALPL")
+Patient_022_ALPLhi <- RenameCells(object = Patient_022_ALPLhi, add.cell.id = "Patient_022_ALPLhi")
+
+# Load the raw dataset for Patient_022_FNG_ALPLneg_CD45pos
+Patient_022_ALPLneg.data <- Read10X(data.dir = "file_location")
+Patient_022_ALPLneg <- CreateSeuratObject(counts = Patient_022_ALPLneg.data, min.cells = 1, min.features = 100)
+Patient_022_ALPLneg <- AddMetaData(Patient_022_ALPLneg, metadata="Patient_022", col.name="Patient")
+Patient_022_ALPLneg <- AddMetaData(Patient_022_ALPLneg, metadata="Female", col.name="Gender")
+Patient_022_ALPLneg <- AddMetaData(Patient_022_ALPLneg, metadata="FN", col.name="Site")
+Patient_022_ALPLneg <- AddMetaData(Patient_022_ALPLneg, metadata="Garvan", col.name="Digestion")
+Patient_022_ALPLneg <- AddMetaData(Patient_022_ALPLneg, metadata="ALPL_neg_CD45_pos", col.name="ALPL")
+Patient_022_ALPLneg <- RenameCells(object = Patient_022_ALPLneg, add.cell.id = "Patient_022_ALPLneg_CD45pos")
+
+# Load the raw dataset for Patient_022_FHG_Normal
+Patient_022_FHG_Normal.data <- Read10X(data.dir = "file_location")
+Patient_022_FHG_Normal <- CreateSeuratObject(counts = Patient_022_FHG_Normal.data, min.cells = 1, min.features = 100)
+Patient_022_FHG_Normal <- AddMetaData(Patient_022_FHG_Normal, metadata="Patient_022", col.name="Patient")
+Patient_022_FHG_Normal <- AddMetaData(Patient_022_FHG_Normal, metadata="Female", col.name="Gender")
+Patient_022_FHG_Normal <- AddMetaData(Patient_022_FHG_Normal, metadata="FH_Normal", col.name="Site")
+Patient_022_FHG_Normal <- AddMetaData(Patient_022_FHG_Normal, metadata="Garvan", col.name="Digestion")
+Patient_022_FHG_Normal <- RenameCells(object = Patient_022_FHG_Normal, add.cell.id = "Patient_022_FHG_Normal")
+
+# Load the raw dataset for Patient_022_FHG_Disease (diseased region as identified by cartilage damage on femoral head)
+Patient_022_FHG_Disease.data <- Read10X(data.dir = "file_location")
+Patient_022_FHG_Disease <- CreateSeuratObject(counts = Patient_022_FHG_Disease.data, min.cells = 1, min.features = 100)
+Patient_022_FHG_Disease <- AddMetaData(Patient_022_FHG_Disease, metadata="Patient_022", col.name="Patient")
+Patient_022_FHG_Disease <- AddMetaData(Patient_022_FHG_Disease, metadata="Female", col.name="Gender")
+Patient_022_FHG_Disease <- AddMetaData(Patient_022_FHG_Disease, metadata="FH_Disease", col.name="Site")
+Patient_022_FHG_Disease <- AddMetaData(Patient_022_FHG_Disease, metadata="Garvan", col.name="Digestion")
+Patient_022_FHG_Disease <- AddMetaData(Patient_022_FHG_Disease, metadata="Patient_022_FHG_Disease", col.name="Sample")
+Patient_022_FHG_Disease <- RenameCells(object = Patient_022_FHG_Disease, add.cell.id = "Patient_022_FHG_Disease")
+
+#Merge 
+Patient_022_merged <- merge(Patient_022_FHG_Normal, y = c(Patient_022_FHG_Disease, Patient_022_ALPLneg, Patient_022_ALPLhi, Patient_022_ALPLlo))
+
+# Load the raw dataset for Patient_024_FNG_ALPLlo
+Patient_024_ALPLlo.data <- Read10X(data.dir = "file_location")
+Patient_024_ALPLlo <- CreateSeuratObject(counts = Patient_024_ALPLlo.data, min.cells = 1, min.features = 100)
+Patient_024_ALPLlo <- AddMetaData(Patient_024_ALPLlo, metadata="Patient_024", col.name="Patient")
+Patient_024_ALPLlo <- AddMetaData(Patient_024_ALPLlo, metadata="FN", col.name="Site")
+Patient_024_ALPLlo <- AddMetaData(Patient_024_ALPLlo, metadata="Garvan", col.name="Digestion")
+Patient_024_ALPLlo <- AddMetaData(Patient_024_ALPLlo, metadata="ALPL_lo", col.name="ALPL")
+Patient_024_ALPLlo <- AddMetaData(Patient_024_ALPLlo, metadata="Female", col.name="Gender")
+Patient_024_ALPLlo <- RenameCells(object = Patient_024_ALPLlo, add.cell.id = "Patient_024_ALPLlo")
+
+# Load the raw dataset for Patient_024_FNG_ALPLhi
+Patient_024_ALPLhi.data <- Read10X(data.dir = "file_location")
+Patient_024_ALPLhi <- CreateSeuratObject(counts = Patient_024_ALPLhi.data, min.cells = 1, min.features = 100)
+Patient_024_ALPLhi <- AddMetaData(Patient_024_ALPLhi, metadata="Patient_024", col.name="Patient")
+Patient_024_ALPLhi <- AddMetaData(Patient_024_ALPLhi, metadata="Female", col.name="Gender")
+Patient_024_ALPLhi <- AddMetaData(Patient_024_ALPLhi, metadata="FN", col.name="Site")
+Patient_024_ALPLhi <- AddMetaData(Patient_024_ALPLhi, metadata="Garvan", col.name="Digestion")
+Patient_024_ALPLhi <- AddMetaData(Patient_024_ALPLhi, metadata="ALPL_hi", col.name="ALPL")
+Patient_024_ALPLhi <- RenameCells(object = Patient_024_ALPLhi, add.cell.id = "Patient_024_ALPLhi")
+
+# Load the raw dataset for Patient_024_FNG_ALPLneg
+Patient_024_ALPLneg.data <- Read10X(data.dir = "file_location")
+Patient_024_ALPLneg <- CreateSeuratObject(counts = Patient_024_ALPLneg.data, min.cells = 1, min.features = 100)
+Patient_024_ALPLneg <- AddMetaData(Patient_024_ALPLneg, metadata="Patient_024", col.name="Patient")
+Patient_024_ALPLneg <- AddMetaData(Patient_024_ALPLneg, metadata="Female", col.name="Gender")
+Patient_024_ALPLneg <- AddMetaData(Patient_024_ALPLneg, metadata="FN", col.name="Site")
+Patient_024_ALPLneg <- AddMetaData(Patient_024_ALPLneg, metadata="Garvan", col.name="Digestion")
+Patient_024_ALPLneg <- AddMetaData(Patient_024_ALPLneg, metadata="ALPL_neg_CD45_pos", col.name="ALPL")
+Patient_024_ALPLneg <- RenameCells(object = Patient_024_ALPLneg, add.cell.id = "Patient_024_ALPLneg")
+
+# Load the raw dataset for Patient_024_FHG_normal
+Patient_024_FHG_Normal.data <- Read10X(data.dir = "file_location")
+Patient_024_FHG_Normal <- CreateSeuratObject(counts = Patient_024_FHG_Normal.data, min.cells = 1, min.features = 100)
+Patient_024_FHG_Normal <- AddMetaData(Patient_024_FHG_Normal, metadata="Patient_024", col.name="Patient")
+Patient_024_FHG_Normal <- AddMetaData(Patient_024_FHG_Normal, metadata="Female", col.name="Gender")
+Patient_024_FHG_Normal <- AddMetaData(Patient_024_FHG_Normal, metadata="FH_Normal", col.name="Site")
+Patient_024_FHG_Normal <- AddMetaData(Patient_024_FHG_Normal, metadata="Garvan", col.name="Digestion")
+Patient_024_FHG_Normal <- RenameCells(object = Patient_024_FHG_Normal, add.cell.id = "Patient_024_FHG_Normal")
+
+# Load the raw dataset for Patient_024_FHG_disease
+Patient_024_FHG_Disease.data <- Read10X(data.dir = "file_location")
+Patient_024_FHG_Disease <- CreateSeuratObject(counts = Patient_024_FHG_Disease.data, min.cells = 1, min.features = 100)
+Patient_024_FHG_Disease <- AddMetaData(Patient_024_FHG_Disease, metadata="Patient_024", col.name="Patient")
+Patient_024_FHG_Disease <- AddMetaData(Patient_024_FHG_Disease, metadata="Female", col.name="Gender")
+Patient_024_FHG_Disease <- AddMetaData(Patient_024_FHG_Disease, metadata="FH_Disease", col.name="Site")
+Patient_024_FHG_Disease <- AddMetaData(Patient_024_FHG_Disease, metadata="Garvan", col.name="Digestion")
+Patient_024_FHG_Disease <- RenameCells(object = Patient_024_FHG_Disease, add.cell.id = "Patient_024_FHG_Disease")
+
+Patient_024_merged <- merge(Patient_024_FHG_Normal, y = c(Patient_024_FHG_Disease, Patient_024_ALPLneg, Patient_024_ALPLhi, Patient_024_ALPLlo))
+
+# Load the raw dataset for Patient_026_FN_G
+Patient_026_FN_G.data <- Read10X(data.dir = "file_location")
+Patient_026_FN_G <- CreateSeuratObject(counts = Patient_026_FN_G.data, min.cells = 1, min.features = 50)
+Patient_026_FN_G <- AddMetaData(Patient_026_FN_G, metadata="Patient_026", col.name="Patient")
+Patient_026_FN_G <- AddMetaData(Patient_026_FN_G, metadata="Male", col.name="Gender")
+Patient_026_FN_G <- AddMetaData(Patient_026_FN_G, metadata="FN", col.name="Site")
+Patient_026_FN_G <- AddMetaData(Patient_026_FN_G, metadata="Garvan", col.name="Digestion")
+Patient_026_FN_G <- RenameCells(object = Patient_026_FN_G, add.cell.id = "Patient_026_FN_G")
+
+# Load the raw dataset for Patient_026_FN_G_cort_cort
+Patient_026_FN_G_cort.data <- Read10X(data.dir = "file_location")
+Patient_026_FN_G_cort <- CreateSeuratObject(counts = Patient_026_FN_G_cort.data, min.cells = 1, min.features = 50)
+Patient_026_FN_G_cort <- AddMetaData(Patient_026_FN_G_cort, metadata="Patient_026", col.name="Patient")
+Patient_026_FN_G_cort <- AddMetaData(Patient_026_FN_G_cort, metadata="Male", col.name="Gender")
+Patient_026_FN_G_cort <- AddMetaData(Patient_026_FN_G_cort, metadata="FN_cort", col.name="Site")
+Patient_026_FN_G_cort <- AddMetaData(Patient_026_FN_G_cort, metadata="Garvan", col.name="Digestion")
+Patient_026_FN_G_cort <- RenameCells(object = Patient_026_FN_G_cort, add.cell.id = "Patient_026_FN_G_cort")
+
+#Merge 
+Patient_026_merged <- merge(Patient_026_FN_G, y = c(Patient_026_FN_G_cort))
+
+# Load the raw dataset for Patient_030_FN_G
+Patient_030_FN_G.data <- Read10X(data.dir = "file_location")
+Patient_030_FN_G <- CreateSeuratObject(counts = Patient_030_FN_G.data, min.cells = 1, min.features = 50)
+Patient_030_FN_G <- AddMetaData(Patient_030_FN_G, metadata="Patient_030", col.name="Patient")
+Patient_030_FN_G <- AddMetaData(Patient_030_FN_G, metadata="Male", col.name="Gender")
+Patient_030_FN_G <- AddMetaData(Patient_030_FN_G, metadata="FN", col.name="Site")
+Patient_030_FN_G <- AddMetaData(Patient_030_FN_G, metadata="Garvan", col.name="Digestion")
+Patient_030_FN_G <- RenameCells(object = Patient_030_FN_G, add.cell.id = "Patient_030_FN_G")
+
+# Load the raw dataset for Patient_030_FN_G_cort
+Patient_030_FN_G_cort.data <- Read10X(data.dir = "file_location")
+Patient_030_FN_G_cort <- CreateSeuratObject(counts = Patient_030_FN_G_cort.data, min.cells = 1, min.features = 50)
+Patient_030_FN_G_cort <- AddMetaData(Patient_030_FN_G_cort, metadata="Patient_030", col.name="Patient")
+Patient_030_FN_G_cort <- AddMetaData(Patient_030_FN_G_cort, metadata="Male", col.name="Gender")
+Patient_030_FN_G_cort <- AddMetaData(Patient_030_FN_G_cort, metadata="FN_cort", col.name="Site")
+Patient_030_FN_G_cort <- AddMetaData(Patient_030_FN_G_cort, metadata="Garvan", col.name="Digestion")
+Patient_030_FN_G_cort <- RenameCells(object = Patient_030_FN_G_cort, add.cell.id = "Patient_030_FN_G_cort")
+
+#Merge 
+Patient_030_merged <- merge(Patient_030_FN_G, y = c(Patient_030_FN_G_cort))
+
+# Load the raw dataset for Patient_032_FN_G second topped up lot. ####might need to chmod - the colour of the files unusual
+Patient_032_FN_G_2.data <- Read10X(data.dir = "file_location")
+Patient_032_FN_G_2 <- CreateSeuratObject(counts = Patient_032_FN_G_2.data, min.cells = 1, min.features = 50)
+Patient_032_FN_G_2 <- AddMetaData(Patient_032_FN_G_2, metadata="Patient_032", col.name="Patient")
+Patient_032_FN_G_2 <- AddMetaData(Patient_032_FN_G_2, metadata="Male", col.name="Gender")
+Patient_032_FN_G_2 <- AddMetaData(Patient_032_FN_G_2, metadata="FN", col.name="Site")
+Patient_032_FN_G_2 <- AddMetaData(Patient_032_FN_G_2, metadata="Garvan", col.name="Digestion")
+Patient_032_FN_G_2 <- RenameCells(object = Patient_032_FN_G_2, add.cell.id = "Patient_032_FN_G_2")
+
+# Load the raw dataset for Patient_032_FN_G_cort
+Patient_032_FN_G_cort.data <- Read10X(data.dir = "file_location")
+Patient_032_FN_G_cort <- CreateSeuratObject(counts = Patient_032_FN_G_cort.data, min.cells = 1, min.features = 50)
+Patient_032_FN_G_cort <- AddMetaData(Patient_032_FN_G_cort, metadata="Patient_032", col.name="Patient")
+Patient_032_FN_G_cort <- AddMetaData(Patient_032_FN_G_cort, metadata="Male", col.name="Gender")
+Patient_032_FN_G_cort <- AddMetaData(Patient_032_FN_G_cort, metadata="FN_cort", col.name="Site")
+Patient_032_FN_G_cort <- AddMetaData(Patient_032_FN_G_cort, metadata="Garvan", col.name="Digestion")
+Patient_032_FN_G_cort <- RenameCells(object = Patient_032_FN_G_cort, add.cell.id = "Patient_032_FN_G_cort")
+
+#Merge 
+Patient_032_merged <- merge(Patient_032_FN_G_2, y = c(Patient_032_FN_G_cort))
+
+# Load the raw dataset for Patient_034_FN_G OA
+Patient_034_FN_G.data <- Read10X(data.dir = "file_location")
+Patient_034_FN_G <- CreateSeuratObject(counts = Patient_034_FN_G.data, min.cells = 1, min.features = 50)
+Patient_034_FN_G <- AddMetaData(Patient_034_FN_G, metadata="Patient_034", col.name="Patient")
+Patient_034_FN_G <- AddMetaData(Patient_034_FN_G, metadata="Male", col.name="Gender")
+Patient_034_FN_G <- AddMetaData(Patient_034_FN_G, metadata="FN", col.name="Site")
+Patient_034_FN_G <- AddMetaData(Patient_034_FN_G, metadata="Garvan", col.name="Digestion")
+Patient_034_FN_G <- RenameCells(object = Patient_034_FN_G, add.cell.id = "Patient_034_FN_G")
+
+# Load the raw dataset for Patient_034_FN_G_cort
+Patient_034_FN_G_cort.data <- Read10X(data.dir = "file_location")
+Patient_034_FN_G_cort <- CreateSeuratObject(counts = Patient_034_FN_G_cort.data, min.cells = 1, min.features = 50)
+Patient_034_FN_G_cort <- AddMetaData(Patient_034_FN_G_cort, metadata="Patient_034", col.name="Patient")
+Patient_034_FN_G_cort <- AddMetaData(Patient_034_FN_G_cort, metadata="Male", col.name="Gender")
+Patient_034_FN_G_cort <- AddMetaData(Patient_034_FN_G_cort, metadata="FN_cort", col.name="Site")
+Patient_034_FN_G_cort <- AddMetaData(Patient_034_FN_G_cort, metadata="Garvan", col.name="Digestion")
+Patient_034_FN_G_cort <- RenameCells(object = Patient_034_FN_G_cort, add.cell.id = "Patient_034_FN_G_cort")
+
+#Merge 
+Patient_034_merged <- merge(Patient_034_FN_G, y = c(Patient_034_FN_G_cort))
+
+#Merge data of all patients
+RRx_OA_merged <- merge(RRx_011_merged, y = c(RRx_012_merged, RRx_014_merged, RRx_020_merged, RRx_022_merged, RRx_024_merged, RRx_026_merged,  RRx_030_merged, RRx_032_merged, RRx_034_merged))
+
+# Mitochondria Genes and number of genes QC
+RRx_OA_merged[["percent.mt"]] <- PercentageFeatureSet(RRx_OA_merged, pattern = "^MT-")
+
+pdf("plots/nFeature_QC.pdf", width = 15, height = 7.5)
+VlnPlot(RRx_OA_merged, features = c("nFeature_RNA"), pt.size = 0.01, y.max = NULL, split.by = "Patient") 
+dev.off()
+
+pdf("plots/percent_mito_QC.pdf", width = 15, height = 7.5)
+VlnPlot(RRx_OA_merged, features = c("percent.mt"), pt.size = 0.01, y.max = NULL, split.by = "Patient") 
+dev.off()
+
+#Filter 
+RRx_OA_merged <- subset(RRx_OA_merged, subset = nFeature_RNA > 200)
+RRx_OA_merged <- subset(RRx_OA_merged, subset = percent.mt < 10)
+
+#Normalise data
+RRx_OA_merged <- NormalizeData(RRx_OA_merged, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#Find variable features
+RRx_OA_merged <- FindVariableFeatures(RRx_OA_merged, selection.method = "vst", nfeatures = 2000)
+
+#Scale data
+all.genes <- rownames(RRx_OA_merged)
+RRx_OA_merged <- ScaleData(RRx_OA_merged, features = all.genes)
+
+#Linear dimensional reduction
+RRx_OA_merged <- RunPCA(RRx_OA_merged, features = VariableFeatures(object = RRx_OA_merged))
+
+#Clustering
+RRx_OA_merged <- FindNeighbors(RRx_OA_merged, dims = 1:20)
+
+#Resolution multiple
+RRx_OA_merged <- FindClusters(RRx_OA_merged, resolution = 0.5)
+
+RRx_OA_merged <- RunUMAP(RRx_OA_merged, dims = 1:20)
+
+#FindAllMarkers
+Idents(RRx_OA_merged) <- "RNA_snn_res.0.5"
+markers_0.5 <- FindAllMarkers(RRx_OA_merged, only.pos = T)
+markers_0.5 <- markers_0.5[markers_0.5$p_val_adj < 0.05,]
+
+write.csv(markers_0.5, file = "RRx_OA_merged_markers_res0-5_adj_pval.csv")
+
+#save post UMAP object
+save(RRx_OA_merged, file = paste0(output, "RRx_011_to_034_OA_only_complete_merged_post_UMAP_20250303.Robj"))
+
+#diet
+RRx_OA_merged_diet <- DietSeurat(RRx_OA_merged, dimreducs = c('pca','umap'))
+
+#save diet
+save(RRx_OA_merged_diet, file = paste0(output, "RRx_011_to_034_OA_only_complete_merged_post_UMAP_diet_20250303.Robj"))
+
+
+
+```
+

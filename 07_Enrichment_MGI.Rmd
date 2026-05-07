@@ -1,0 +1,429 @@
+---
+title: "Calculate enrichment for MGI genelist"
+output: html_document
+date: "2025-11-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(RITAN)
+library(RITANdata)
+library(purrr)
+library(stringr)
+library(tibble)
+
+# Set seed
+set.seed(69)
+
+# Load gene programs
+gene_programs <- read.csv("path/to/gene/programs/Cluster_markers_res1_v4_updated_adj_pvalue_log2FC_0-5_human_orthologues_20231121.csv", row.names = 1) %>%
+  arrange(desc(avg_log2FC))
+
+# Load cluster annotation key
+annotation_key <- read.csv("path/to/annotation/key/ClusterAnnotations_Ryan.csv")
+
+# Load mouse to human gene map
+all_genes <- read.csv("path/to/gene/map/All_HumanMouseGenes.csv", row.names = 1)
+
+# Load background gene universe
+gene_universe <- read.table("path/to/gene/universe/Mouse.Hum.Prot.Cod.Orth.Ens.105.Hg38.gset")
+
+# Load GWAS enrichment results for BMD
+gwas_bmd <- read.table("path/to/gwas/ebmd/results/UKBF-Magma-EUR-Bmd-As-C-2u1dkb-All-Hg38-06092022.txt") |>
+  as.data.frame() |>
+  (\(x) {
+    colnames(x) <- x[1, ]
+    dplyr::slice(x, -1)
+  })()
+
+# Load MGI data of genes associated with abnormal bone structure
+mgi_bone_structure <- read_xlsx("path/to/mgi/genelist/MGImarkerQuery_20240521_AbnormalBoneStructure_MP0003795.xlsx") %>%
+  dplyr::select(-"...10")
+
+# Load gene names correction datasheet - manually curated list of gene name corrections for genetic dysplasias table
+gene_name_corrections <- read_xlsx("path/to/mgi/corrections/MGIDataset_GeneNameCorrections.xlsx", col_names = T)
+```
+
+########################
+# Pre-process the data
+########################
+
+```{r}
+# Convert cluster IDs to names - gene programs
+gene_programs$cluster <- annotation_key$cluster_name[match(gene_programs$cluster, annotation_key$cluster_number)]
+
+# Process MGI bone structure table
+mgi_bone_structure <- mgi_bone_structure %>%
+  # Correct gene names
+  mutate(Symbol = if_else(Symbol %in% gene_name_corrections$Original_Symbol, gene_name_corrections$Corrected_Symbol[match(Symbol, gene_name_corrections$Original_Symbol)], Symbol)) %>%
+  # Add Ensembl IDs and mouse ortholog information
+  mutate(Ensembl.ID.Mouse = all_genes$ensembl_gene_id[match(Symbol, all_genes$mgi_symbol)],
+         HGNC.Symbol      = all_genes$HGNC.symbol[match(Symbol, all_genes$mgi_symbol)],
+         Ensembl.ID.Human = all_genes$Gene.stable.ID.1[match(Symbol, all_genes$mgi_symbol)]) %>%
+  # Add Ensembl IDs for genes with no mouse orthologs
+  mutate(Ensembl.ID.Mouse = if_else(is.na(Ensembl.ID.Mouse) & Symbol %in% gene_name_corrections$Corrected_Symbol,
+                                    gene_name_corrections$Ensembl_ID_Mouse[match(Symbol, gene_name_corrections$Corrected_Symbol)],
+                                    Ensembl.ID.Mouse)) %>%
+  # Filter to protein-coding genes
+  filter(Ensembl.ID.Human %in% gene_universe[[1]])
+
+# Convert relevant GWAS data columns to numeric
+gwas_bmd <- gwas_bmd %>%
+  mutate_at(colnames(gwas_bmd)[3:11], as.numeric) %>%
+  filter(P_MULTI <= 2.5387*10^-6)
+
+# Set clusters of interest
+clusters_of_interest <- c("28. Osteoblasts", "27. Chondrocytes", "30. Osteoclasts", "31. Endothelial cells", "32. Vascular SMCs")
+
+# Subset marker gene lists
+gene_programs_gwasfiltered <- gene_programs[gene_programs$Gene.stable.ID.1 %in% gwas_bmd$ENSEMBLE.ID == TRUE, ]
+
+# Amend enrichment_symbols function to use Bonferroni p value adjustment
+enrichment_symbols2 <- function( geneset, term = NULL, all_symbols = NA, ... ){
+    
+    if (! exists("active_genesets")) {
+      load_geneset_symbols()
+    }
+
+    if (all(is.na(all_symbols))){
+      all_symbols <- load_all_protein_coding_symbols()
+    }
+
+    geneset <- geneset[ geneset %in% all_symbols ]
+    K <- length(all_symbols) # length( setdiff( kit, c('.') ) ) # assayable
+    k <- length(geneset) # our observation
+    
+    if (is.null(term)){
+
+      ## Test all genesets
+      active_int_term <- names(active_genesets)
+      p <- array( NA, dim=c( length(active_genesets), 4 ) )
+      for (i in 1:length(active_genesets)){
+
+          this.set.possible <- (active_genesets[[i]])[ active_genesets[[i]] %in% all_symbols ]
+
+          q <- sum( geneset %in% this.set.possible )
+          p[i,2] <- q
+          p[i,3] <- paste( geneset[ geneset %in% this.set.possible ], collapse=';' )
+          p[i,4] <- length(unique( this.set.possible ))
+          if ( q >= 2 ){
+              m <- as.numeric(p[i,4])
+              n <- K - m
+              p[i,1] <- phyper( q-1, m, n, k, lower.tail = FALSE )
+          } else {
+              p[i,1] <- 1
+          }
+
+      }
+
+    } else {
+      
+      if (is.null(names(term))){
+        active_int_term <- intersect(names(active_genesets), term)
+        if ( length(active_int_term) == 0 ){
+          active_int_term <- names(active_genesets)[ grepl( sprintf('[[:alnum:]]*[.]%s$',term), 
+                                                            names(active_genesets) ) |
+                                                     grepl( sprintf('[[:alnum:]]*[.]%s$', gsub(' ','_',term) ), 
+                                                            names(active_genesets) )
+                                                    ]
+        }
+      } else {
+        active_int_term <- intersect(names(active_genesets), names(term))
+      }
+      
+      if ( length(active_int_term) < max(c( length(term), length(names(term)) )) ) {
+        cat(sprintf('Undefined Term: %s', setdiff(term, active_int_term) ), sep = "\n")
+        stop('You have requested terms that have not been defined. Please check contents of "term" parameter.')
+      } else {
+        
+        ## Test the requested term
+        p <- array( NA, dim=c( length(active_int_term), 4 ) )
+        for (i in 1:length(active_int_term)){
+          
+          j <- which(names(active_genesets) == active_int_term[i])
+          this.set.possible <- (active_genesets[[j]])[ active_genesets[[j]] %in% all_symbols ]
+          q <- sum( geneset %in% this.set.possible )
+          p[i,2] <- q
+          p[i,3] <- paste( geneset[ geneset %in% this.set.possible ], collapse=';' )
+          p[i,4] <- length(unique( this.set.possible ))
+          if ( q >= 2 ){
+            m <- as.numeric(p[i,4])
+            n <- K - m
+            p[i,1] <- phyper( q-1, m, n, k, lower.tail = FALSE )
+          } else {
+            p[i,1] <- 1 # if only one gene, set the p-value to 1 - not quite right, but singletons were leading to numeric errors...
+          }
+          
+        }
+      }
+        
+    }
+    
+    # tmp <- names(active_genesets)
+    # if (!is.null(term)){
+    #     tmp <- names(term)
+    # }
+
+    res <- data.frame( name  = active_int_term,
+                       p     = as.numeric(p[,1]),
+                       n     = as.numeric(p[,2]),
+                       n.set = as.numeric(p[,4]),
+                       genes = p[,3],
+                       q     = p.adjust( as.numeric(p[,1]), method = "bonferroni" )  ) #### Adjust this line to change the method of p value correction
+    
+    #if (dim(res)[1] < 100){
+    #  warning('Few terms were considered here.
+    #The q-values returned may not be appropriate for this particular analysis')
+    #}
+
+    res <- res[order(res$p), ]
+
+    return(res)
+}
+
+# Amend term_enrichment function to incorporate new p value adjustment
+term_enrichment2 <- function(geneset, resources = resources.default, report_resources_separately = FALSE, verbose = TRUE, all_symbols = NA, filter_to_intersection = FALSE, ... ){
+  
+  if ( (!exists('all_symbols')) || all(is.na(all_symbols)) ){
+    all_symbols <- load_all_protein_coding_symbols()
+  }
+  
+  enrich <- list()
+  process_source <- function( s_file, v=TRUE, f_intersect=FALSE ){
+    
+    load_geneset_symbols( s_file, verbose = v ) # load into active_genesets
+    
+    if (f_intersect){
+      all_symbols_active <- unique(c(unlist( active_genesets ))) # baseline background
+      ## -->> Need to detect if user gave "all_symbols" and take intersection <<--
+      ## -->> Also, limit "geneset" to intersection <<--
+      if (!is.null(get('all_symbols'))){
+        all_symbols_active <- all_symbols_active[ all_symbols_active %in% all_symbols ]
+      }
+      geneset <- geneset[ geneset %in% all_symbols_active ]
+    } else {
+      all_symbols_active <- all_symbols
+    }
+
+    # run enrichment for active_genesets
+    p0 <- enrichment_symbols2( geneset, term = names(active_genesets),
+                               all_symbols = all_symbols_active, ... )
+    p0 <- p0[ order(p0$p), ]
+
+    if (v){
+      #printBanner( s_file )
+      print( head( p0[ ,-5], n=5 ) )
+    }
+
+    return(p0)
+
+  }
+
+  if( report_resources_separately ){
+
+    enrich <- lapply( resources, function(x){
+                      process_source(x, v = verbose,
+                                     f_intersect = filter_to_intersection) })
+    names(enrich) <- resources
+
+  } else {
+
+    enrich <- process_source( resources, v = verbose,
+                              f_intersect = filter_to_intersection )
+
+  }
+  
+  class(enrich) <- c( 'term_enrichment2', class(enrich) )
+  attr(enrich, 'resources') <- resources
+  
+  return(enrich)
+
+}
+```
+
+########################
+# Perform enrichment tests for MGI bone structure genelist in selected clusters
+########################
+
+```{r}
+##########      Run on full cluster marker lists      ##########
+
+
+# Run for loop to add cluster marker genelists to RITAN dataset
+for(cluster in clusters_of_interest){
+  geneset_list$gene_programs_subset[[cluster]] <- unique(gene_programs$Gene.stable.ID.1[gene_programs$cluster == cluster])
+}
+
+# Perform over-enrichment test on each gene program
+enrich_subset <- term_enrichment2(geneset = mgi_bone_structure$Ensembl.ID.Human, resources = "gene_programs_subset", all_symbols = gene_universe[,1])
+
+# Process data table
+enrich_subset <- enrich_subset %>%
+  # Re-order rows
+  mutate(name = gsub("gene_programs_subset\\.", "", name), name = factor(name, levels = unique(clusters_of_interest))) %>%
+  arrange(name) %>%
+
+  # Calculate expected successes and fold enrichment for each cluster
+  mutate(expected = (length(mgi_bone_structure$Ensembl.ID.Human) / nrow(gene_universe)) * n.set, fold_enrichment = n / expected) %>%
+
+  # Convert significance values to asterisks
+  mutate(significance = case_when(q < 0.0001 ~ "****", q < 0.001 ~ "***", q < 0.01 ~ "**", q < 0.05 ~ "*", TRUE ~ "ns"), analysis = "full_markers")
+
+
+##########      Filter marker lists for genes associated with BMD in human GWAS      ##########
+
+
+# Run for loop to add cluster marker genelists to RITAN dataset
+for(cluster in clusters_of_interest){
+  geneset_list$gene_programs_gwasfiltered_subset[[cluster]] <- unique(gene_programs_gwasfiltered$Gene.stable.ID.1[gene_programs_gwasfiltered$cluster == cluster])
+}
+
+# Perform over-enrichment test on each gene program
+enrich_gwasfiltered_subset <- term_enrichment2(geneset = mgi_bone_structure$Ensembl.ID.Human, resources = "gene_programs_gwasfiltered_subset", all_symbols = gene_universe[,1])
+
+# Process data table
+enrich_gwasfiltered_subset <- enrich_gwasfiltered_subset %>%
+  # Re-order rows
+  mutate(name = gsub("gene_programs_gwasfiltered_subset\\.", "", name), name = factor(name, levels = unique(clusters_of_interest))) %>%
+  arrange(name) %>%
+
+  # Calculate expected successes and fold enrichment for each cluster
+  mutate(expected = (length(mgi_bone_structure$Ensembl.ID.Human) / nrow(gene_universe)) * n.set, fold_enrichment = n / expected) %>%
+  
+  # Convert significance values to asterisks
+  mutate(significance = case_when(q < 0.0001 ~ "****", q < 0.001 ~ "***", q < 0.01 ~ "**", q < 0.05 ~ "*", TRUE ~ "ns"), analysis = "gwas_markers")
+
+
+##########      Combine and save      ##########
+
+
+# Combine data tables
+p_values_subset <- bind_rows(enrich_subset, enrich_gwasfiltered_subset) %>%
+  # Re-order rows
+  arrange(name) %>%
+  # Add columns indicating background size
+  mutate(mgi_size = length(mgi_bone_structure$Ensembl.ID.Human), universe = nrow(gene_universe)) %>%
+  # Select and rename columns
+  dplyr::select(Analysis.Test        = analysis,
+                Cluster              = name,
+                Population.Successes = mgi_size,
+                Population.Size      = universe,
+                Sample.Successes     = n,
+                Sample.Size          = n.set,
+                Expected.Successes   = expected,
+                Fold.Enrichment      = fold_enrichment,
+                Raw.P.Value          = p,
+                Adj.P.Value          = q,
+                Significance         = significance,
+                Identified.Genes     = genes) %>%
+  # Re-order rows
+  arrange(Analysis.Test) %>%
+  # Convert identified genes to gene symbols
+  mutate(Identified.Genes = sapply(Identified.Genes, function(x){
+    genes <- strsplit(x, ";") %>% unlist()
+    genes <- all_genes$mgi_symbol[match(genes, all_genes$Gene.stable.ID.1)]
+    paste(genes, collapse = ", ")}))
+
+# Save table
+write.csv(x = p_values_subset, file = "MGIEnrichments.csv")
+```
+
+########################
+# Stratify enrichments by log fold change of gene expression
+########################
+
+```{r}
+# Set log fold change breaks to stratify by
+lfc_breaks <- c(0.5, 1, 1.5, 2, 2.5, 3)
+
+# Write function to run enrichment tests using either of the cluster markers inputs
+run_lfc_enrichment <- function(gene_programs_df, analysis_label) {
+  # Internally, apply function to each cluster individually
+  run_one_cluster <- function(cluster) {
+    # Subset markers for this cluster
+    subsetted_markers <- gene_programs_df %>%
+      filter(cluster == !!cluster)
+    
+    # Create LFC-stratified gene sets and add to RITAN object
+    geneset_list$gene_programs_by_lfc <<- map(lfc_breaks, ~ unique(subsetted_markers$Gene.stable.ID.1[subsetted_markers$avg_log2FC >= .x])) |> set_names(paste0("LFC_", lfc_breaks))
+    
+    # Run enrichment
+    term_enrichment2(geneset = mgi_bone_structure$Ensembl.ID.Human, resources = "gene_programs_by_lfc", all_symbols = gene_universe[[1]]) %>%
+      # Tidy up cluster names
+      mutate(name = str_remove(name, "gene_programs_by_lfc\\."), name = factor(name, levels = paste0("LFC_", lfc_breaks))) %>%
+      # Re-order rows
+      arrange(name) %>%
+      # Calculate expected successes and fold enrichments, and append with significance values as asterisks
+      mutate(expected        = (length(mgi_bone_structure$Ensembl.ID.Human) / nrow(gene_universe)) * n.set,
+             fold_enrichment = n / expected,
+             significance    = case_when(q < 0.0001 ~ "****", q < 0.001 ~ "***", q < 0.01 ~ "**", q < 0.05 ~ "*", TRUE ~ "ns"),
+             analysis        = analysis_label,
+             cluster         = cluster)
+    }
+  
+  # Run for all clusters and bind into one tibble
+  map_df(clusters_of_interest, run_one_cluster)
+}
+
+# Run analysis using full markers
+enrichment_by_lfc_full <- run_lfc_enrichment(gene_programs_df = gene_programs, analysis_label = "full_markers")
+
+# Run analysis using GWAS-filtered markers
+enrichment_by_lfc_gwas <- run_lfc_enrichment(gene_programs_df = gene_programs_gwasfiltered, analysis_label = "gwas_markers")
+
+# Combine data tables
+p_values_lfc <- bind_rows(enrichment_by_lfc_full, enrichment_by_lfc_gwas) %>%
+  # Replace NaN fold enrichment with 0
+  mutate(fold_enrichment = ifelse(is.nan(fold_enrichment), 0, fold_enrichment)) %>%
+  
+  # Convert columns to factors
+  mutate(lfc      = factor(name, levels = paste0("LFC_", lfc_breaks)),
+         analysis = factor(analysis, levels = c("full_markers", "gwas_markers")),
+         name     = factor(cluster, levels = clusters_of_interest)) %>%
+  
+  # Re-order rows
+  arrange(analysis, name, lfc) %>%
+  
+  # Add background population info
+  mutate(mgi_size = length(mgi_bone_structure$Ensembl.ID.Human), universe = nrow(gene_universe)) %>%
+  
+  # Select and rename final columns
+  dplyr::select(Cluster              = name,
+                Analysis.Test        = analysis,
+                Log2FC.Bin           = lfc,
+                Population.Successes = mgi_size,
+                Population.Size      = universe,
+                Sample.Successes     = n,
+                Sample.Size          = n.set,
+                Expected.Successes   = expected,
+                Fold.Enrichment      = fold_enrichment,
+                Raw.P.Value          = p,
+                Adj.P.Value          = q,
+                Significance         = significance,
+                Identified.Genes     = genes) %>%
+  
+  # Convert gene IDs to MGI symbols
+  mutate(Identified.Genes = map_chr(Identified.Genes, ~ {
+    genes <- strsplit(.x, ";")[[1]]
+    genes <- all_genes$mgi_symbol[match(genes, all_genes$Gene.stable.ID.1)]
+    paste(genes, collapse = ", ")
+  })) %>%
+  
+  # Reset rownames to default
+  rownames_to_column(var = "row_id") %>%
+  dplyr::select(-row_id)
+
+# Save data table
+write.csv(x = p_values_lfc, file = "MGIEnrichments_ByLogFoldChange.csv")
+```

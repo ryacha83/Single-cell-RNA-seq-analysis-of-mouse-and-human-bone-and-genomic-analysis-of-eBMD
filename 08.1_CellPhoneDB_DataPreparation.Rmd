@@ -1,0 +1,78 @@
+---
+title: "Prepare CellPhoneDB input files"
+output: html_document
+date: '2025-11-05'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(Seurat)
+
+# Set seed
+set.seed(69)
+
+# Load Seurat object and update
+load("path/to/seurat/object/Analysis_1_object_post_UMAP_res_1_260319_v3_DIET_recoloured_alex.Robj") %>%
+  UpdateSeuratObject()
+
+# Load cluster annotation key
+annotation_key <- read.csv("path/to/annotation/key/ClusterAnnotations_Ryan.csv")
+
+# Load mouse to human gene map
+all_genes <- read.csv("path/to/gene/map/All_HumanMouseGenes.csv", row.names = 1)
+```
+
+########################
+# Pre-process the data
+########################
+
+```{r}
+# Convert cluster IDs to names - Seurat object meta data
+diet_regions.combined.final1.v3$seurat_clusters <- factor(x = annotation_key$cluster_name[match(diet_regions.combined.final1.v3$res.1, annotation_key$cluster_number)],
+                                                          levels = annotation_key$cluster_name)
+
+# Set Idents
+Idents(diet_regions.combined.final1.v3) <- "seurat_clusters"
+```
+
+########################
+# Prepare input data for CellPhoneDB analysis
+########################
+
+```{r}
+# Process Seurat object
+filtered_counts <- diet_regions.combined.final1.v3 %>%
+  # Extract counts matrix
+  GetAssayData(slot = "data") %>%
+  # Undo log transformation
+  expm1() %>% {
+    # Convert to human genes
+    gene_mapping <- data.frame(mgi_symbol = rownames(.)) %>% left_join(all_genes, by = "mgi_symbol") %>% filter(!is.na(HGNC.symbol)) %>% distinct(HGNC.symbol, .keep_all = TRUE)
+    
+    # Subset for genes with human orthologs
+    tmp <- .[gene_mapping$mgi_symbol, ]
+    rownames(tmp) <- gene_mapping$HGNC.symbol
+    tmp <- tmp[rownames(tmp) != "", ]
+    tmp
+  }
+
+# Extract metadata
+metadata <- data.frame(Cell = colnames(diet_regions.combined.final1.v3), cell_type = Idents(diet_regions.combined.final1.v3))
+
+# Create humanised Seurat object
+global.humanised.object <- CreateSeuratObject(counts = filtered_counts, meta.data = metadata)
+
+# Export data for input into CellPhoneDB
+write.table(filtered_counts, file = "GlobalObject_Counts.txt", sep = "\t", quote = F, col.names = NA)
+write.table(metadata, file = "GlobalObject_MetaData.txt", sep = "\t", row.names = F, quote = F)
+```

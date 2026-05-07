@@ -1,0 +1,116 @@
+---
+title: "Calculate restriction score for genes in each cluster gene program"
+output: html_document
+date: '2025-11-05'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(Seurat)
+
+# Set seed
+set.seed(69)
+
+# Load Seurat object
+load("path/to/seurat/object/Analysis_1_object_post_UMAP_res_1_260319_v3_DIET_recoloured_alex.Robj") %>%
+  UpdateSeuratObject()
+
+# Load gene programs
+gene_programs <- read.csv("path/to/gene/programs/Cluster_markers_res1_v4_updated_adj_pvalue_log2FC_0-5_human_orthologues_20231121.csv.csv", row.names = 1) %>%
+  arrange(desc(avg_log2FC))
+
+# Load cluster annotation key
+annotation_key <- read.csv("path/to/annotation/key/ClusterAnnotations_Ryan.csv.csv")
+```
+
+########################
+# Pre-process the data
+########################
+
+```{r}
+# Convert cluster IDs to names - gene programs
+gene_programs$cluster <- annotation_key$cluster_name[match(gene_programs$cluster, annotation_key$cluster_number)]
+
+# Convert cluster IDs to names - Seurat object meta data
+diet_regions.combined.final1.v3$seurat_clusters <- factor(x = annotation_key$cluster_name[match(diet_regions.combined.final1.v3$res.1, annotation_key$cluster_number)],
+                                                          levels = annotation_key$cluster_name)
+
+# Set Idents
+Idents(diet_regions.combined.final1.v3) <- "seurat_clusters"
+```
+
+########################
+# Calculate restrictedness of genes in gene programs
+########################
+
+```{r}
+# Extract raw counts matrix
+counts_matrix <- GetAssayData(diet_regions.combined.final1.v3, slot = "counts", assay = "RNA")
+
+# Calculate restrictedness scores for each gene across each gene program
+restriction_scores <- lapply(X = annotation_key$cluster_name, FUN = function(cluster){
+  # Subset marker genes for cluster
+  markers <- gene_programs[gene_programs$cluster == cluster, ]
+  
+  # Remove duplicated rows from multiple human orthologs mapping to single mouse gene
+  markers <- markers[!duplicated(markers$gene), ]
+  
+  # Calculate percentage of cells in each cluster that express each genes
+  data <- FetchData(diet_regions.combined.final1.v3, "seurat_clusters") %>% rownames_to_column("cell.barcode")
+  pcts <- as.data.frame(t(as.matrix(counts_matrix[which(rownames(counts_matrix) %in% markers$gene), ]))) %>%
+              rownames_to_column("cell.barcode") %>%
+              left_join(data, by = "cell.barcode") %>%
+              gather(key = "gene", value = "nUMI", c(-cell.barcode, -seurat_clusters)) %>%
+              group_by(seurat_clusters, gene) %>%
+              summarise(non.expressing.cells = sum(nUMI == 0), expressing.cells = sum(nUMI > 0)) %>%
+              ungroup() %>%
+              dplyr::mutate(total.cells = non.expressing.cells + expressing.cells) %>%
+              dplyr::mutate(frac.of.expr.cells.per.cluster = expressing.cells/total.cells)
+  
+  # Calculate restrictedness
+  scores <- sapply(X = markers$gene, FUN = function(gene){
+    # Subset pcts data
+    pcts_gene <- pcts[pcts$gene == gene, ]
+    
+    # Identify log2FC value for selected gene in selected cluster
+    log2FC <- markers$avg_log2FC[markers$gene == gene]
+    
+    # Identify percentage of cells in selected cluster positive for expression of selected gene
+    pct_cluster <- markers$pct.1[markers$gene == gene]
+    
+    # Calculate number of other clusters in which >=25% of cells express selected gene
+    clusters_positive <- nrow(pcts_gene[pcts_gene$frac.of.expr.cells.per.cluster >= 0.25, ])
+    
+    # Identify pct.2 value, for comparison
+    pct.2 <- markers$pct.2[markers$gene == gene]
+    
+    # Combine outputs
+    outputs <- c(cluster, gene, log2FC, pct_cluster, clusters_positive, pct.2)
+    
+    return(outputs)
+  }) %>% t() %>% as.data.frame()
+  names(scores) <- c("cluster", "gene", "avg_log2FC", "pct.1", "positive_clusters", "pct.2")
+  
+  # Convert to numeric
+  scores$avg_log2FC <- as.numeric(scores$avg_log2FC)
+  scores$pct.1 <- as.numeric(scores$pct.1)
+  scores$positive_clusters <- as.numeric(scores$positive_clusters)
+  scores$pct.2 <- as.numeric(scores$pct.2)
+  
+  return(scores)
+})
+names(restriction_scores) <- annotation_key$cluster_name
+
+# Save restriction scores data
+save(restriction_scores, file = "RestrictionScores.Rdata")
+```

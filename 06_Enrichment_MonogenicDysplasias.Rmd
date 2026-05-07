@@ -1,0 +1,603 @@
+---
+title: "Perform enrichment tests of monogenic skeletal dysplasia genes within gene programs and genelists"
+output: html_document
+date: "2025-11-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+########################
+# Load libraries and data
+########################
+
+```{r}
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(Seurat)
+library(readxl)
+library(RITAN)
+library(RITANdata)
+
+# Set seed
+set.seed(69)
+
+# Load Seurat object and update
+load("path/to/seurat/object/Analysis_1_object_post_UMAP_res_1_260319_v3_DIET_recoloured_alex.Robj") %>%
+  UpdateSeuratObject()
+
+# Load gene programs
+gene_programs <- read.csv("path/to/gene/programs/Cluster_markers_res1_v4_updated_adj_pvalue_log2FC_0-5_human_orthologues_20231121.csv", row.names = 1) %>%
+  arrange(desc(avg_log2FC))
+
+# Load cluster annotation key
+annotation_key <- read.csv("path/to/annotation/key/ClusterAnnotations_Ryan.csv")
+
+# Load mouse to human gene map
+all_genes <- read.csv("path/to/gene/map/All_HumanMouseGenes.csv", row.names = 1)
+
+# Load background gene universe
+gene_universe <- read.table("path/to/gene/universe/Mouse.Hum.Prot.Cod.Orth.Ens.105.Hg38.gset")
+
+# Load genetic skeletal dysplasias dataset (2023 edition)
+gen_ske_dys <- read_xlsx("path/to/nosology/database/Nosology.2023.Formatted.Group.Raw.Hg38.xlsx", sheet = "Heading.Stripped", col_names = F) %>%
+  as.data.frame() %>%
+  setNames(c("Group_Number", "Group_Name", "Order", "Nosology", "Inheritance", "HGNC_Symbol", "MIM_Number", "Description"))
+
+# Load gene names correction datasheet - manually curated list of gene name corrections for genetic dysplasias table
+gene_name_corrections <- read_xlsx("path/to/nosology/corrections/NosologyDataset_GeneNameCorrections.xlsx", col_names = T)
+
+# Load GWAS enrichment results for BMD and pulse rate
+pulse_rate <- read.table("path/to/pulse/rate/genelist/UKBF-Magma-EUR-Pr-As-C-2u1dkb-All-Hg38-21082023.txt", header = T) %>%
+  as.data.frame()
+bmd <- read.table("path/to/bmd/genelist/UKBF-Magma-EUR-Bmd-As-C-2u1dkb-All-Hg38-06092022.txt", header = T) %>%
+  as.data.frame()
+
+# Load magma enrichment values for each cluster
+magma_global <- read.csv("path/to/magma/ebmd/results/Magma_info_0-3_global_BMD_Height_SD_ensembl_105_reordered.csv")
+
+# Load full list of protein coding genes closest to GWAS lead variants
+lead_variants <- read.table("path/to/gwas/lead/variants/UKBF-EUR-Bmd-As-C-Cojo-Hg38db151-SumStats-Ensmbl-Nos2023-Mgi-EFOAnnotate-27072024-Final-Format.txt", header = T) %>%
+  as.data.frame()
+```
+
+########################
+# Pre-process the data
+########################
+
+```{r}
+# Convert cluster IDs to names - gene programs
+gene_programs$cluster <- annotation_key$cluster_name[match(gene_programs$cluster, annotation_key$cluster_number)]
+
+# Convert cluster IDs to names - Seurat object meta data
+diet_regions.combined.final1.v3$seurat_clusters <- factor(x = annotation_key$cluster_name[match(diet_regions.combined.final1.v3$res.1, annotation_key$cluster_number)],
+                                                          levels = annotation_key$cluster_name)
+
+# Set Idents
+Idents(diet_regions.combined.final1.v3) <- "seurat_clusters"
+
+# Correct gene names, attach gene metadata, create all-dysplasia group, and filter
+gen_ske_dys <- gen_ske_dys %>%
+  # Fix incorrect gene symbols
+  mutate(HGNC_Symbol = if_else(HGNC_Symbol %in% gene_name_corrections$Original_Symbol,
+                               gene_name_corrections$Corrected_Symbol[match(HGNC_Symbol, gene_name_corrections$Original_Symbol)],
+                               HGNC_Symbol)) %>%
+  # Add Ensembl IDs and ortholog information
+  mutate(Ensembl.ID = all_genes$Gene.stable.ID.1[match(HGNC_Symbol, all_genes$HGNC.symbol)],
+         MGI_Symbol = all_genes$mgi_symbol[match(HGNC_Symbol, all_genes$HGNC.symbol)],
+         Ensembl_Mouse = all_genes$ensembl_gene_id[match(HGNC_Symbol, all_genes$HGNC.symbol)]) %>%
+  # Add missing Ensembl IDs for genes with no mouse orthologs
+  mutate(Ensembl.ID = if_else(is.na(Ensembl.ID) & !is.na(HGNC_Symbol), gene_name_corrections$Ensembl.ID[match(HGNC_Symbol, gene_name_corrections$Corrected_Symbol)], Ensembl.ID)) %>%
+  # Create additional summary rows for all dysplasias - to test as a whole group 
+  {original <- .
+   all_dys_genes <- unique(original$Ensembl.ID)
+   all_dysplasias <- tibble(Group_Number = 0, Group_Name = "All Dysplasias", Order = (seq_along(all_dys_genes)) / 1000, Nosology = "All Dysplasias",
+                            Inheritance = NA_character_, MIM_Number = NA_character_, Description = NA_character_, Ensembl.ID = all_dys_genes) %>%
+     mutate(HGNC_Symbol   = original$HGNC_Symbol[match(Ensembl.ID, original$Ensembl.ID)],
+            MGI_Symbol    = original$MGI_Symbol[match(Ensembl.ID, original$Ensembl.ID)],
+            Ensembl_Mouse = original$Ensembl_Mouse[match(Ensembl.ID, original$Ensembl.ID)])
+   bind_rows(all_dysplasias, original)} %>%
+  # Drop rows with no assigned gene
+  filter(!is.na(Ensembl.ID))
+
+# Convert relevant columns in GWAS tables to numeric and filter for significant results (P_MULTI <= 2.5387*10^-6; this equates to 0.05 / number of genes tested)
+pulse_rate <- pulse_rate %>%
+  mutate(across(3:11, as.numeric)) %>%
+  filter(P_MULTI <= 2.5387e-6)
+
+bmd <- bmd %>%
+  mutate(across(3:11, as.numeric)) %>%
+  filter(P_MULTI <= 2.5387e-6)
+
+# Extract list of unique genes from GWAS lead variants table
+gwas_genes <- unique(lead_variants$C.ENSEMBLE)
+
+# Amend term_enrichment_by_subset function to increase number of decimal places in output p/q values
+term_enrichment_by_subset_2 <- function (groups = NA, resources = resources.default, q_value_threshold = 0.01,  verbose = TRUE, display_type = "q", phred = TRUE, ...) {
+    if (all(is.na(groups)) || (!methods::is(groups, "list"))) {
+        stop("\"groups\" should be a list where each entry is a vector of gene symbols.")
+    }
+    if ((display_type == "n") && (phred == TRUE)) {
+        warning("\"display_type\" is set to \"n\" and \"phred\" is TRUE. We suggest setting phred=FALSE.\n")
+    }
+    load_geneset_symbols(resources, verbose = verbose)
+    if (verbose) {
+        cat("\tRunning Enrichment...", sep = " ")
+    }
+    e <- lapply(groups, enrichment_symbols, ...)
+    term.order <- e[[1]]$name
+    e <- lapply(e, function(x) {
+        x[match(term.order, x$name), ]
+    })
+    if (verbose) {
+        cat("FDR adjustment...", sep = " ")
+    }
+    i <- apply(do.call(cbind, lapply(e, function(x) {
+        getElement(x, "q") <= q_value_threshold
+    })), 1, any)
+    m <- cbind(e[[1]][, c("name", "n.set")], do.call(cbind, lapply(e, 
+        function(x) {
+            getElement(x, display_type)
+        })))
+    first.data.col <- 3
+    data.cols <- first.data.col:dim(m)[2]
+    m <- m[i, ]
+    m <- m[order(apply(m[, data.cols], 1, min)), ]
+    if (phred) {
+        m[, data.cols] <- -log10(m[, data.cols])
+    }
+    if (phred || (display_type == "n")) {
+        m <- m[order(apply(m[, data.cols], 1, max), decreasing = TRUE), 
+            ]
+    }
+    m[, data.cols] <- round(m[, data.cols], 25)    ### Adjust this number for number of decimal places on reported p values
+    class(m) <- c("term_enrichment_by_subset", class(m))
+    attr(m, "display_type") <- display_type
+    attr(m, "phred") <- phred
+    if (verbose) {
+        cat("done.", sep = "\n")
+    }
+    return(m)
+}
+
+# Amend enrichment_symbols function to use Bonferroni p value adjustment
+enrichment_symbols <- function( geneset, term = NULL, all_symbols = NA, ... ){
+    
+    if (! exists("active_genesets")) {
+      load_geneset_symbols()
+    }
+
+    if (all(is.na(all_symbols))){
+      all_symbols <- load_all_protein_coding_symbols()
+    }
+
+    geneset <- geneset[ geneset %in% all_symbols ]
+    K <- length(all_symbols) # length( setdiff( kit, c('.') ) ) # assayable
+    k <- length(geneset) # our observation
+    
+    if (is.null(term)){
+
+      ## Test all genesets
+      active_int_term <- names(active_genesets)
+      p <- array( NA, dim=c( length(active_genesets), 4 ) )
+      for (i in 1:length(active_genesets)){
+
+          this.set.possible <- (active_genesets[[i]])[ active_genesets[[i]] %in% all_symbols ]
+
+          q <- sum( geneset %in% this.set.possible )
+          p[i,2] <- q
+          p[i,3] <- paste( geneset[ geneset %in% this.set.possible ], collapse=';' )
+          p[i,4] <- length(unique( this.set.possible ))
+          if ( q >= 2 ){
+              m <- as.numeric(p[i,4])
+              n <- K - m
+              p[i,1] <- phyper( q-1, m, n, k, lower.tail = FALSE )
+          } else {
+              p[i,1] <- 1
+          }
+
+      }
+
+    } else {
+      
+      if (is.null(names(term))){
+        active_int_term <- intersect(names(active_genesets), term)
+        if ( length(active_int_term) == 0 ){
+          active_int_term <- names(active_genesets)[ grepl( sprintf('[[:alnum:]]*[.]%s$',term), 
+                                                            names(active_genesets) ) |
+                                                     grepl( sprintf('[[:alnum:]]*[.]%s$', gsub(' ','_',term) ), 
+                                                            names(active_genesets) )
+                                                    ]
+        }
+      } else {
+        active_int_term <- intersect(names(active_genesets), names(term))
+      }
+      
+      if ( length(active_int_term) < max(c( length(term), length(names(term)) )) ) {
+        cat(sprintf('Undefined Term: %s', setdiff(term, active_int_term) ), sep = "\n")
+        stop('You have requested terms that have not been defined. Please check contents of "term" parameter.')
+      } else {
+        
+        ## Test the requested term
+        p <- array( NA, dim=c( length(active_int_term), 4 ) )
+        for (i in 1:length(active_int_term)){
+          
+          j <- which(names(active_genesets) == active_int_term[i])
+          this.set.possible <- (active_genesets[[j]])[ active_genesets[[j]] %in% all_symbols ]
+          q <- sum( geneset %in% this.set.possible )
+          p[i,2] <- q
+          p[i,3] <- paste( geneset[ geneset %in% this.set.possible ], collapse=';' )
+          p[i,4] <- length(unique( this.set.possible ))
+          if ( q >= 2 ){
+            m <- as.numeric(p[i,4])
+            n <- K - m
+            p[i,1] <- phyper( q-1, m, n, k, lower.tail = FALSE )
+          } else {
+            p[i,1] <- 1 # if only one gene, set the p-value to 1 - not quite right, but singletons were leading to numeric errors...
+          }
+          
+        }
+      }
+        
+    }
+    
+    # tmp <- names(active_genesets)
+    # if (!is.null(term)){
+    #     tmp <- names(term)
+    # }
+
+    res <- data.frame( name  = active_int_term,
+                       p     = as.numeric(p[,1]),
+                       n     = as.numeric(p[,2]),
+                       n.set = as.numeric(p[,4]),
+                       genes = p[,3],
+                       q     = p.adjust( as.numeric(p[,1]), method = "bonferroni" )  ) #### Adjust this line to change the method of p value correction
+    
+    #if (dim(res)[1] < 100){
+    #  warning('Few terms were considered here.
+    #The q-values returned may not be appropriate for this particular analysis')
+    #}
+
+    res <- res[order(res$p), ]
+
+    return(res)
+}
+
+# Create function to perform bonferroni adjustment to p values
+bonf_adjust <- function(x){p.adjust(x, method = "bonferroni", n = nrow(enrich))}
+```
+
+########################
+# Perform enrichment tests for all dysplasia genes
+########################
+
+```{r}
+# Add dysplasia group genelists to RITAN dataset
+for(group in unique(gen_ske_dys$Group_Name[gen_ske_dys$Group_Name == "All Dysplasias"])){
+  geneset_list$all_dysplasias[[group]] <- unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])
+}
+
+# Create list of cluster gene programs
+markers_list <- lapply(X = annotation_key$cluster_name, FUN = function(cluster){
+  return(gene_programs$Gene.stable.ID.1[gene_programs$cluster == cluster])
+})
+names(markers_list) <- annotation_key$cluster_name
+
+# Perform over-enrichment test on each gene program
+enrich <- term_enrichment_by_subset_2(groups = markers_list, resources = "all_dysplasias", all_symbols = gene_universe[,1], display_type = "q", q_value_threshold = 1, phred = F)
+enrich_rawvalues <- term_enrichment_by_subset_2(groups = markers_list, resources = "all_dysplasias", all_symbols = gene_universe[,1], display_type = "p", q_value_threshold = 1, phred = F)
+
+# Re-order and re-format tables
+enrich <- enrich %>%
+  mutate(name = factor(gsub("all_dysplasias\\.", "", name), levels = unique(gen_ske_dys$Group_Name[gen_ske_dys$Group_Name == "All Dysplasias"]))) %>%
+  arrange(name) %>%
+  dplyr::select(-(1:2)) %>%
+  t() %>%
+  as.data.frame() %>%
+  tibble::column_to_rownames(var = NULL)
+enrich_rawvalues <- enrich_rawvalues %>%
+  mutate(name = factor(gsub("all_dysplasias\\.", "", name), levels = unique(gen_ske_dys$Group_Name[gen_ske_dys$Group_Name == "All Dysplasias"]))) %>%
+  arrange(name) %>%
+  dplyr::select(-(1:2)) %>%
+  t() %>%
+  as.data.frame() %>%
+  tibble::column_to_rownames(var = NULL)
+
+# Perform p value adjustment on enrich table
+enrich_adj <- sapply(enrich, FUN = bonf_adjust) %>% round(digits = 25) %>% as.data.frame()
+  
+# Re-name rows
+row.names(enrich_adj) <- row.names(enrich)
+
+# Create tables for each cluster
+enrichment_results_alldysplasias <- lapply(X = annotation_key$cluster_name, FUN = function(cluster){
+  # Extract markers for cluster of interest
+  markers <- gene_programs[gene_programs$cluster == cluster, ]
+  
+  # Extract p value score for cluster of interest
+  p_value <- enrich_rawvalues[cluster, ]
+
+  # Extract q value scores for cluster of interest
+  q_value <- enrich_adj[cluster, ]
+  
+  # Identify total number of genes associated with each dysplasia
+  Population.Successes <- length(unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == "All Dysplasias"]))
+  
+  # Identify total number of genes associated with any dysplasia
+  Population.Size <- nrow(gene_universe)
+  
+  # Identify total number of genes associated with each dysplasia expressed by cluster of interest
+  Sample.Successes <- length(markers$Gene.stable.ID.1[markers$Gene.stable.ID.1 %in% unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == "All Dysplasias"])])
+  
+  # Identify total number of marker genes for cluster of interest
+  Sample.Size <- nrow(markers)
+  
+  # Identify number of expected successes for each dysplasia
+  Expected.Successes <- (Population.Successes / Population.Size) * Sample.Size
+  
+  # Identify fold enrichment
+  Fold.Enrichment <- Sample.Successes / Expected.Successes
+
+  # Round values to 2dp
+  Expected.Successes <- sapply(X = Expected.Successes, FUN = function(x){round(x = x, digits = 2)})
+  Fold.Enrichment <- sapply(X = Fold.Enrichment, FUN = function(x){round(x = x, digits = 2)})
+  
+  # List gene successes for each dysplasia
+  Identified.Genes <- markers$HGNC.symbol[markers$Gene.stable.ID.1 %in% unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == "All Dysplasias"])] %>% paste(collapse = ", ")
+  
+  # Combine
+  output <- c(cluster, Population.Successes, Population.Size, Sample.Successes, Sample.Size, Expected.Successes, Fold.Enrichment, Identified.Genes, p_value, q_value)
+})
+names(enrichment_results_alldysplasias) <- annotation_key$cluster_name
+
+# Merge tables
+enrichment_results_merged_alldysplasias <- bind_rows(enrichment_results_alldysplasias) %>%
+  t() %>%
+  as.data.frame() %>%
+  `colnames<-`(c("Cluster", "Population.Successes", "Population.Size", "Sample.Successes", "Sample.Size",
+                 "Expected.Successes", "Fold.Enrichment", "Identified.Genes", "Raw.P.Value", "Adj.P.Value"))
+
+# Save
+write.csv(x = enrichment_results_merged_alldysplasias, file = "EnrichmentResults_AllDysplasiaGenes.csv", row.names = F)
+```
+
+########################
+# Perform enrichment tests for dysplasia group genes in each cluster
+########################
+
+```{r}
+# Add dysplasia group genelists to RITAN dataset
+for(group in unique(gen_ske_dys$Group_Name[gen_ske_dys$Group_Name != "All Dysplasias"])){
+  geneset_list$dysplasia_groups[[group]] <- unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])
+}
+
+# Perform over-enrichment tests on each gene program
+enrich <- term_enrichment_by_subset_2(groups = markers_list, resources = "dysplasia_groups", all_symbols = gene_universe[,1], display_type = "q", q_value_threshold = 1, phred = F)
+enrich_rawvalues <- term_enrichment_by_subset_2(groups = markers_list, resources = "dysplasia_groups", all_symbols = gene_universe[,1], display_type = "p", q_value_threshold = 1, phred = F)
+
+# Re-order and reformat tables
+enrich <- enrich %>%
+  mutate(name = factor(gsub("dysplasia_groups\\.", "", name), levels = unique(gen_ske_dys$Group_Name[gen_ske_dys$Group_Name != "All Dysplasias"]))) %>%
+  arrange(name) %>%
+  dplyr::select(-(1:2)) %>%
+  t() %>%
+  as.data.frame() %>%
+  tibble::column_to_rownames(var = NULL)
+enrich_rawvalues <- enrich_rawvalues %>%
+  mutate(name = factor(gsub("dysplasia_groups\\.", "", name), levels = unique(gen_ske_dys$Group_Name[gen_ske_dys$Group_Name != "All Dysplasias"]))) %>%
+  arrange(name) %>%
+  dplyr::select(-(1:2)) %>%
+  t() %>%
+  as.data.frame() %>%
+  tibble::column_to_rownames(var = NULL)
+
+# Perform p value adjustment on enrich table
+enrich_adj <- sapply(enrich, FUN = bonf_adjust) %>% round(digits = 25) %>% as.data.frame()
+
+# Re-name rows
+row.names(enrich_adj) <- row.names(enrich)
+
+# Create tables for each cluster
+enrichment_results_bygroup <- lapply(X = annotation_key$cluster_name, FUN = function(cluster){
+  # Extract markers for cluster of interest
+  markers <- gene_programs[gene_programs$cluster == cluster, ]
+  
+  # Extract p value scores for cluster of interest
+  p_values <- enrich_rawvalues[cluster, ] %>%
+    t() %>%
+    as.data.frame()
+  colnames(p_values) <- "Raw.P.Value"
+  
+  # Extract q value scores for cluster of interest
+  q_values <- enrich_adj[cluster, ] %>%
+    t() %>%
+    as.data.frame()
+  p_values$Adjusted.P.Value <- q_values[,1]
+  
+  # Identify total number of genes associated with each dysplasia
+  p_values$Population.Successes <- sapply(X = row.names(p_values), FUN = function(group){length(unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group]))})
+  
+  # Identify total number of genes associated with any dysplasia
+  p_values$Population.Size <- nrow(gene_universe)
+  
+  # Identify total number of genes associated with each dysplasia expressed by cluster of interest
+  p_values$Sample.Successes <- sapply(X = row.names(p_values), FUN = function(group){
+    group_genes_expressed <- length(markers$Gene.stable.ID.1[markers$Gene.stable.ID.1 %in% unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])])
+  })
+  
+  # Identify total number of marker genes for cluster of interest
+  p_values$Sample.Size <- nrow(markers)
+  
+  # Identify number of expected successes for each dysplasia
+  p_values$Expected.Successes <- (p_values$Population.Successes / p_values$Population.Size) * p_values$Sample.Size
+  
+  # Identify fold enrichment
+  p_values$Fold.Enrichment <- p_values$Sample.Successes / p_values$Expected.Successes
+
+  # Round values to 2dp
+  p_values$Expected.Successes <- sapply(X = p_values$Expected.Successes, FUN = function(x){round(x = x, digits = 2)})
+  p_values$Fold.Enrichment <- sapply(X = p_values$Fold.Enrichment, FUN = function(x){round(x = x, digits = 2)})
+  
+  # List gene successes for each dysplasia
+  p_values$Identified.Genes <- sapply(X = row.names(p_values), FUN = function(group){
+    group_genes_expressed <- markers$HGNC.symbol[markers$Gene.stable.ID.1 %in% unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])] %>% paste(collapse = ", ")
+  })
+  
+  # Add column indicating cluster name
+  p_values$Cluster <- cluster
+  
+  # Re-order columns
+  p_values <- p_values[ ,c(10, 3:9, 1, 2)]
+})
+names(enrichment_results_bygroup) <- annotation_key$cluster_name
+
+# Merge results
+enrichment_results_merged <- bind_rows(enrichment_results_bygroup) %>%
+  mutate(Dysplasia_Group = colnames(enrich_rawvalues)) %>%
+  dplyr::select(1, Dysplasia_Group, 2:10)
+
+# Save table
+write.csv(x = enrichment_results_merged, file = "EnrichmentResults_ByDysplasiaGroup.csv", row.names = F)
+```
+
+########################
+# Perform enrichment tests for dysplasia group genes in trait genelists
+########################
+
+```{r}
+# Run for loop to add dysplasia group genelists to RITAN dataset
+for(group in unique(gen_ske_dys$Group_Name)){
+  geneset_list$dysplasia_groups_all[[group]] <- unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])
+}
+
+# Create list of genes associated with each trait
+traits_list <- list(PulseRate = unique(pulse_rate$ENSEMBLE.ID[!is.na(pulse_rate$ENSEMBLE.ID)]),
+                    BMD = unique(bmd$ENSEMBLE.ID[!is.na(bmd$ENSEMBLE.ID)]))
+
+# Perform over-enrichment test on each genelist
+enrich <- term_enrichment_by_subset_2(groups = traits_list, resources = "dysplasia_groups_all", all_symbols = gene_universe[,1], display_type = "q", q_value_threshold = 1, phred = F)
+
+enrich_rawvalues <- term_enrichment_by_subset_2(groups = traits_list, resources = "dysplasia_groups_all", all_symbols = gene_universe[,1], display_type = "p", q_value_threshold = 1, phred = F)
+
+# Re-arrange data tables
+enrich <- enrich %>%
+  mutate(name = gsub("dysplasia_groups_all\\.", "", name), name = factor(name, levels = unique(gen_ske_dys$Group_Name))) %>%
+  arrange(name) %>%
+  tibble::column_to_rownames("name") %>%
+  dplyr::select(-1) %>%
+  t() %>%
+  as.data.frame()
+
+enrich_rawvalues <- enrich_rawvalues %>%
+  mutate(name = gsub("dysplasia_groups_all\\.", "", name), name = factor(name, levels = unique(gen_ske_dys$Group_Name))) %>%
+  arrange(name) %>%
+  tibble::column_to_rownames("name") %>%
+  dplyr::select(-1) %>%
+  t() %>%
+  as.data.frame()
+
+# Create separate tables for each trait
+enrichment_results <- lapply(X = c("PulseRate", "BMD"), FUN = function(trait){
+  # Extract genes associated with trait
+  if(trait == "PulseRate"){markers <- pulse_rate} else {markers <- bmd}
+  
+  # Extract p value scores for cluster of interest
+  results <- enrich_rawvalues[trait, ] %>%
+    t() %>%
+    as.data.frame()
+  colnames(results) <- "Raw.P.Value"
+  results$Adj.P.Value <- as.character(enrich[trait, ])
+  
+  # Identify total number of genes associated with each dysplasia
+  results$Population.Successes <- sapply(X = row.names(results), FUN = function(group){length(unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group]))})
+  
+  # Identify total number of genes associated with any dysplasia
+  results$Population.Size <- nrow(gene_universe)
+  
+  # Identify total number of genes associated with each dysplasia expressed by cluster of interest
+  results$Sample.Successes <- sapply(X = row.names(results), FUN = function(group){
+    group_genes_expressed <- length(markers$ENSEMBLE.ID[markers$ENSEMBLE.ID %in% unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])])
+  })
+  
+  # Identify total number of marker genes for cluster of interest
+  results$Sample.Size <- nrow(markers)
+  
+  # Identify number of expected successes for each dysplasia
+  results$Expected.Successes <- (results$Population.Successes / results$Population.Size) * results$Sample.Size
+  
+  # Identify fold enrichment
+  results$Fold.Enrichment <- results$Sample.Successes / results$Expected.Successes
+
+  # Round values to 2dp
+  results$Expected.Successes <- sapply(X = results$Expected.Successes, FUN = function(x){round(x = x, digits = 2)})
+  results$Fold.Enrichment <- sapply(X = results$Fold.Enrichment, FUN = function(x){round(x = x, digits = 2)})
+  
+  # List gene successes for each dysplasia
+  results$Identified.Genes <- sapply(X = row.names(results), FUN = function(group){
+    group_genes_expressed <- markers$GENE.SYMBOL[markers$ENSEMBLE.ID %in% unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])] %>% paste(collapse = ", ")
+  })
+  
+  # Label with trait
+  results$Trait <- trait
+  
+  # Label dysplasia groups
+  results$Dysplasia <- colnames(enrich)
+  
+  # Re-order columns
+  results <- results[ ,c(10, 11, 3:8, 1, 2, 9)]
+})
+names(enrichment_results) <- c("PulseRate", "BMD")
+
+# Merge results
+enrichment_results_merged <- bind_rows(enrichment_results)
+
+# Save
+write.csv(x = enrichment_results_merged, file = "EnrichmentResults_ByTrait.csv", row.names = F)
+```
+
+########################
+# Perform enrichment tests for dysplasia group genes in list of GWAS lead variants genes
+########################
+
+```{r}
+# Run for loop to add dysplasia group genelists to RITAN dataset
+for(group in unique(gen_ske_dys$Group_Name)){
+  geneset_list$dysplasia_groups_all[[group]] <- unique(gen_ske_dys$Ensembl.ID[gen_ske_dys$Group_Name == group])
+}
+
+# Perform over-enrichment test on lead variants genelist
+enrich <- term_enrichment(geneset = gwas_genes, resources = "dysplasia_groups_all", all_symbols = gene_universe[,1])
+
+# Re-order rows
+enrich$name <- factor(x = gsub(pattern = "dysplasia_groups_all.", replacement = "", x = enrich$name),
+                      levels = unique(gen_ske_dys$Group_Name))
+enrich <- enrich[order(enrich$name), ]
+row.names(enrich) <- enrich$name
+
+# Perform p value adjustment on enrich table
+enrich$bonferroni <- enrich$p * 41
+enrich$bonferroni[enrich$bonferroni > 1] <- 1
+
+# Add column with -log(adj.p.value)
+enrich$log.bonferroni <- -log(enrich$bonferroni, base = 10)
+
+# Run function to create separate tables for each cluster
+enrichment_table <- data.frame(Dysplasia_Group = enrich$name,
+                               Population.Successes = sapply(X = enrich$name, FUN = function(x){nrow(gen_ske_dys[gen_ske_dys$Group_Name == x,])}),
+                               Population.Size = nrow(gene_universe),
+                               Sample.Successes = enrich$n,
+                               Sample.Size = length(unique(lead_variants$C.ENSEMBLE)),
+                               Expected.Successes = (sapply(X = enrich$name, FUN = function(x){nrow(gen_ske_dys[gen_ske_dys$Group_Name == x,])}) / nrow(gene_universe)) * length(gwas_genes),
+                               Fold.Enrichment = enrich$n / ((sapply(X = enrich$name,
+                                                                     FUN = function(x){nrow(gen_ske_dys[gen_ske_dys$Group_Name == x,])}) / nrow(gene_universe)) * length(gwas_genes)),
+                               Raw.P.Value = enrich$p,
+                               Adjusted.P.Value = enrich$bonferroni,
+                               Identified.Genes = sapply(X = enrich$genes,
+                                                         FUN = function(x){paste(unique(lead_variants$C.GENE[lead_variants$C.ENSEMBLE %in% c(sapply(strsplit(x, ";"), '[')) == TRUE]),
+                                                                                 collapse = ", ")}))
+
+# Save dataframe
+write.csv(x = enrichment_table, file = "EnrichmentResults_LeadVariants.csv", row.names = F)
+```
